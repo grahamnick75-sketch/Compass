@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Cozy Ledger v5</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">The Cozy Canopy</p>
+        <h1>The Cozy Ledger v5</h1>
+        <p>ADHD-friendly household finance planning with bills, paychecks, buckets, goals, and game plans.</p>
+      </div>
+      <div class="hero-stat"><span>Safe to Spend</span><strong id="heroSafe">$0.00</strong></div>
+    </header>
+
+    <nav class="topnav">
+      <button class="navbtn active" data-screen="dashboard">Dashboard</button>
+      <button class="navbtn" data-screen="accounts">Accounts</button>
+      <button id="menuBtn" class="navbtn menu">☰ More</button>
+    </nav>
+
+    <aside id="drawer" class="drawer">
+      <div class="drawer-head"><strong>More Tools</strong><button id="closeDrawer">×</button></div>
+      <button data-screen="calendar">Calendar</button>
+      <button data-screen="bills">Bills</button>
+      <button data-screen="buckets">Buckets</button>
+      <button data-screen="paychecks">Paychecks</button>
+      <button data-screen="gameplan">Game Plan</button>
+      <button data-screen="assign">Assign Money</button>
+      <button data-screen="afford">Can We Afford It?</button>
+      <button data-screen="inbox">Financial Inbox</button>
+      <button data-screen="history">What Changed?</button>
+      <button data-screen="ai">AI Guide</button>
+      <button data-screen="settings">Settings</button>
+    </aside>
+    <div id="overlay" class="overlay"></div>
+
+    <main>
+      <section id="dashboard" class="screen active"></section>
+      <section id="accounts" class="screen"></section>
+      <section id="calendar" class="screen"></section>
+      <section id="bills" class="screen"></section>
+      <section id="buckets" class="screen"></section>
+      <section id="paychecks" class="screen"></section>
+      <section id="gameplan" class="screen"></section>
+      <section id="assign" class="screen"></section>
+      <section id="afford" class="screen"></section>
+      <section id="inbox" class="screen"></section>
+      <section id="history" class="screen"></section>
+      <section id="ai" class="screen"></section>
+      <section id="settings" class="screen"></section>
+    </main>
+  </div>
+
+  <dialog id="modal"><form method="dialog" id="modalForm" class="modal-card">
+    <h2 id="modalTitle">Item</h2>
+    <input type="hidden" id="mType"><input type="hidden" id="mId">
+    <label>Name<input id="mName" required></label>
+    <label>Amount<input id="mAmount" type="number" step="0.01" required></label>
+    <label>Date<input id="mDate" type="date"></label>
+    <label>Recurring<select id="mRecurring"><option value="none">No</option><option value="weekly">Weekly</option><option value="biweekly">Biweekly</option><option value="monthly">Monthly</option></select></label>
+    <label>Status<select id="mStatus"><option value="planned">Planned</option><option value="funded">Funded</option><option value="paid">Paid</option><option value="received">Received</option><option value="archived">Archived</option></select></label>
+    <menu><button value="cancel" class="ghost">Cancel</button><button type="button" id="deleteBtn" class="danger">Delete</button><button value="default" class="primary">Save</button></menu>
+  </form></dialog>
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
