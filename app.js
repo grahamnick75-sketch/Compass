@@ -1,6 +1,7 @@
-/* Compass v6.2 - static GitHub Pages app, updated Simulator AI prompt */
+/* Compass v6.3 - visual polish, data-safe planning, and 360 Wealth View */
 const STORAGE_KEY = 'compass_v6_state';
-const SCHEMA_VERSION = '6.2.1';
+const HAD_EXISTING_STATE = !!localStorage.getItem(STORAGE_KEY);
+const SCHEMA_VERSION = '6.3.0';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const LIMITS = {
   name: 60, title: 75, notes: 500, householdName: 60, memberName: 40,
@@ -12,8 +13,29 @@ const RECURRENCE = ['one-time','weekly','biweekly','monthly'];
 const PRIORITIES = ['critical','important','flexible'];
 const PRIORITY_LABEL = { critical:'Critical', important:'Important', flexible:'Flexible' };
 const PAYMENT_TYPES = ['unknown','autopay','manual'];
-const PAYMENT_LABEL = { unknown:'Unknown', autopay:'Autopay', manual:'Manual Pay' };
+const PAYMENT_LABEL = { unknown:'Not Set', autopay:'Autopay', manual:'Manual Pay' };
 const CALENDAR_COLOR_MODES = ['recordType','owner','paymentType','none'];
+const ACCOUNT_TYPES = ['checking','savings','cash','credit-card','investment','401k','hsa','other-asset','loan-debt'];
+const ACCOUNT_TYPE_LABEL = { checking:'Checking', savings:'Savings', cash:'Cash', 'credit-card':'Credit Card', investment:'Investment', '401k':'401(k) / Retirement', hsa:'HSA', 'other-asset':'Other Asset', 'loan-debt':'Loan / Debt' };
+const ASSET_TYPES = ['checking','savings','cash','investment','401k','hsa','other-asset'];
+const DEBT_TYPES = ['credit-card','loan-debt'];
+const BUCKET_FREQUENCIES = ['weekly','paycheck','monthly'];
+const BUCKET_FREQUENCY_LABEL = { weekly:'Weekly', paycheck:'Per Paycheck Cycle', monthly:'Monthly' };
+const PAGE_DESCRIPTIONS = {
+  dashboard:'Your dashboard gives you a quick read on whether your current planning money can cover what is coming next. Start here when you want to know if you are okay until the next paycheck.',
+  accounts:'Accounts show the money Compass can see in your household plan. Mark only the accounts you want included in day-to-day planning so Available to Plan stays accurate.',
+  calendar:'The calendar helps you see when bills, paychecks, goals, and events are coming up. Use it to spot tight weeks before they surprise you.',
+  bills:'Bills are the obligations your plan needs to protect first. Use priority levels to tell Compass what matters most: Critical bills are funded first, then Important bills, then Flexible bills.',
+  buckets:'Buckets are short-term spending plans for groceries, gas, baby, pets, or household needs. Use them to protect everyday life between paychecks.',
+  goals:'Savings Goals track money you want to build over time for planned needs, emergencies, or future purchases. Compass can help you decide when there is room to contribute.',
+  events:'Events are upcoming moments that may affect your money, like birthdays, travel, holidays, or home projects. Link an event to a savings goal when you want to plan ahead for it.',
+  paychecks:'Paychecks show the income Compass expects to help fund your plan. Mark a paycheck received when it arrives, then update your account balance so Compass does not double-count it.',
+  assign:'Assign Money turns your available cash into a clear funding plan. Choose whether you are assigning from Available to Plan or from a specific paycheck, then Compass will help prioritize bills, buckets, and goals.',
+  fundingHistory:'Funding History shows where assigned money has gone over time. Use it to understand what has already been funded and how each paycheck or planning balance was used.',
+  simulator:'Decision Simulator helps you test a possible financial choice before you commit to it. Use it to see how a new bill, paycheck, bucket, goal, or event could affect your plan.',
+  insights:'Compass Insights summarizes what your plan is telling you. Use Analyst for a factual overview, Advisor for next funding recommendations, and Simulator for what-if questions.',
+  settings:'Settings control how Compass behaves, calculates, displays, and protects your data. Use this page to adjust planning rules, privacy, themes, backups, and import options.'
+};
 const COLOR_OPTIONS = { blue:'#2563eb', green:'#15803d', orange:'#ea580c', purple:'#7c3aed', red:'#dc2626', gold:'#ca8a04', teal:'#0f766e', gray:'#64748b' };
 const OWNER_HOUSEHOLD = 'household';
 const TYPE_LABEL = { bill:'Bill', bucket:'Bucket', goal:'Savings Goal', event:'Event', paycheck:'Paycheck', account:'Account', member:'Member' };
@@ -52,7 +74,7 @@ function defaultState(){
     household: { id: householdId, name:'My Household', createdAt:new Date().toISOString() },
     members: [ { id: OWNER_HOUSEHOLD, name:'Household', system:true }, { id:nickId, name:'Nick' }, { id:danielleId, name:'Danielle' } ],
     settings: {
-      theme:'cozy', aiMode:'advisor', aiEndpoint:'',
+      theme:'whimsical', aiMode:'advisor', aiEndpoint:'', showAvailableHeader:true, themePromptSeen:false, insightsLastRefreshed:'', assignSourceMode:'balance',
       fundedRules: { critical:true, important:true, flexible:false, buckets:true, goals:false },
       lookAheadDays: 120,
       calendarColorMode:'recordType',
@@ -62,9 +84,9 @@ function defaultState(){
         owner:{}
       }
     },
-    accounts: [ { id:uid(), name:'Checking', balance:0, includeInPlanning:true, ownerId:OWNER_HOUSEHOLD } ],
+    accounts: [ { id:uid(), name:'Checking', type:'checking', balance:0, includeInPlanning:true, ownerId:OWNER_HOUSEHOLD } ],
     bills: [],
-    buckets: [ { id:uid(), name:'Groceries', targetAmount:400, ownerId:OWNER_HOUSEHOLD }, { id:uid(), name:'Gas', targetAmount:125, ownerId:OWNER_HOUSEHOLD } ],
+    buckets: [ { id:uid(), name:'Groceries', targetAmount:400, frequency:'weekly', ownerId:OWNER_HOUSEHOLD }, { id:uid(), name:'Gas', targetAmount:125, frequency:'weekly', ownerId:OWNER_HOUSEHOLD } ],
     goals: [ { id:uid(), name:'Emergency Fund', targetAmount:10000, currentAmount:0, plannedContribution:100, dueDate:'', ownerId:OWNER_HOUSEHOLD, linkedEventId:'' } ],
     events: [],
     paychecks: [],
@@ -106,7 +128,19 @@ function logActivity(action, detail, meta={}){
   state.activityLog = state.activityLog.slice(0,500);
 }
 function ownerName(id){ return state.members.find(m=>m.id===id)?.name || 'Household'; }
-function planningBalance(extraState=state){ return extraState.accounts.filter(a=>a.includeInPlanning).reduce((sum,a)=>sum + Number(a.balance || 0), 0); }
+function planningBalance(extraState=state){ return extraState.accounts.filter(a=>!a.deleted && a.includeInPlanning).reduce((sum,a)=>sum + Number(a.balance || 0), 0); }
+function accountType(v){ const raw=String(v||'').toLowerCase().trim(); const aliases={saving:'savings',retirement:'401k','401(k)':'401k','401k-retirement':'401k','credit card':'credit-card',credit:'credit-card',loan:'loan-debt',debt:'loan-debt',asset:'other-asset'}; const key=aliases[raw] || raw; return ACCOUNT_TYPES.includes(key) ? key : 'checking'; }
+function isDebtAccount(a){ return DEBT_TYPES.includes(accountType(a.type)); }
+function assetsTotal(){ return state.accounts.filter(a=>!a.deleted && ASSET_TYPES.includes(accountType(a.type))).reduce((sum,a)=>sum+Number(a.balance||0),0); }
+function debtsTotal(){ return state.accounts.filter(a=>!a.deleted && isDebtAccount(a)).reduce((sum,a)=>sum+Math.abs(Number(a.balance||0)),0); }
+function netPosition(){ return assetsTotal() - debtsTotal(); }
+function pageIntro(id){ const text = PAGE_DESCRIPTIONS[id] || ''; return text ? `<p class="page-purpose">${escapeHtml(text)}</p>` : ''; }
+function updateHeaderBalance(){ const el=document.getElementById('availablePill'); if(!el)return; const show=state.settings.showAvailableHeader!==false; el.innerHTML = `<span>Available to Plan</span><strong>${show ? fmtMoney(planningBalance()) : '••••'}</strong>`; el.title='Available to Plan is the total balance of accounts marked Include in Planning.'; }
+function explainAvailableToPlan(){ showInfoModal('Available to Plan', '<p>Available to Plan is the total balance of accounts marked <strong>Include in Planning</strong>. It does not include expected paychecks or accounts excluded from planning.</p>'); }
+function bucketFrequency(v){ return BUCKET_FREQUENCIES.includes(String(v||'').toLowerCase()) ? String(v||'').toLowerCase() : 'weekly'; }
+function weeksInMonth(date=new Date()){ const y=date.getFullYear(), m=date.getMonth(); return Math.round(new Date(y,m+1,0).getDate()/7); }
+function bucketMonthlyAmount(bucket, monthDate=calendarCursor){ const amount=Number(bucket.targetAmount||0); const freq=bucketFrequency(bucket.frequency); if(freq==='monthly') return amount; if(freq==='paycheck') return amount * Math.max(1, expandRecurring(state.paychecks, iso(new Date(monthDate.getFullYear(),monthDate.getMonth(),1)), iso(new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0)), 'nextPayday').length); return amount * weeksInMonth(monthDate); }
+function reminderItems(days=7){ const end=iso(addDays(parseDate(todayISO()),days)); return expandRecurring(state.bills,todayISO(),end,'dueDate').map(b=>{ const st=itemFundingStatus('bill',b,b.occurrenceDate); const d=daysBetween(todayISO(), b.occurrenceDate); return {...b, remaining:st.remaining, daysAway:d}; }).filter(b=>b.remaining>0).sort((a,b)=>a.occurrenceDate.localeCompare(b.occurrenceDate)); }
 function nextDateForRecurrence(d, rec){ if (rec === 'weekly') return addDays(d,7); if (rec === 'biweekly') return addDays(d,14); if (rec === 'monthly') return addMonths(d,1); return addDays(d,36500); }
 function expandRecurring(items, startIso, endIso, dateKey){
   const start = parseDate(startIso), end = parseDate(endIso), out = [];
@@ -251,6 +285,20 @@ function advisorSummary(){
   }
   return lines.join('\n');
 }
+function advisorCardsHTML(){
+  const cash = planningBalance();
+  const next = nextPaycheck();
+  const targets = advisorTargets().slice(0,8);
+  let remainingCash = cash;
+  const actionCards = targets.map((t, idx)=>{
+    const suggested = Math.max(0, Math.min(remainingCash, Number(t.remaining||0)));
+    remainingCash -= suggested;
+    const isBill = t.type === 'bill';
+    const payment = isBill ? `<span><b>Payment Type:</b> ${PAYMENT_LABEL[normalizePaymentType(t.paymentType)]}</span>` : '';
+    return `<div class="advisor-action"><div class="advisor-rank">${idx+1}</div><div class="advisor-body"><h3>${escapeHtml(t.name)}</h3><div class="advisor-grid"><span><b>Type:</b> ${isBill ? `${PRIORITY_LABEL[t.priority] || 'Flexible'} Bill` : TYPE_LABEL[t.type] || t.type}</span>${t.dueDate?`<span><b>Due:</b> ${formatDate(t.dueDate)}</span>`:''}${payment}<span><b>Remaining:</b> ${fmtMoney(t.remaining)}</span><span><b>Suggested:</b> ${fmtMoney(suggested)}</span></div></div></div>`;
+  }).join('');
+  return `<div class="advisor-summary-grid">${softBox('Available Planning Cash', `<strong class="big-money">${fmtMoney(cash)}</strong>`, 'Money in accounts marked Include in Planning')}${softBox('Next Paycheck', next ? `<strong>${escapeHtml(next.name)}</strong><br>${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : '<span class="muted">No paycheck entered</span>', 'Expected income context')}</div><h3>Recommended Allocation Order</h3>${actionCards || '<p class="muted">No upcoming bills, buckets, or savings contributions need funding before the next paycheck.</p>'}`;
+}
 function insightSummary(mode='advisor'){
   const funded = calculateFundedThrough({includeExpectedIncome:false});
   const projected = calculateFundedThrough({includeExpectedIncome:true});
@@ -266,7 +314,7 @@ function insightSummary(mode='advisor'){
 function extractScenarioAmount(text){
   const s = String(text || '');
   const moneyMatch = s.match(/\$\s*([0-9][0-9,]*(?:\.\d{1,2})?)/);
-  const numberMatch = s.match(/([0-9][0-9,]*(?:\.\d{1,2})?)/);
+  const numberMatch = s.match(/\b([0-9][0-9,]*(?:\.\d{1,2})?)\b/);
   const raw = moneyMatch?.[1] || numberMatch?.[1] || '';
   const parsed = parseMoney(raw.replace(/,/g,''));
   return parsed.ok ? parsed.value : 0;
@@ -329,9 +377,10 @@ function runSimulatorAI(){
 }
 function formatDate(value){ if (!isRealDate(value)) return '—'; return parseDate(value).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
 function render(){
-  document.documentElement.dataset.theme = state.settings.theme === 'cozy' ? '' : state.settings.theme;
-  renderDashboard(); renderAccounts(); renderCalendar(); renderBills(); renderBuckets(); renderGoals(); renderEvents(); renderPaychecks(); renderAssign(); renderFundingHistory(); renderSimulator(); renderInsights(); renderSettings();
+  document.documentElement.dataset.theme = (state.settings.theme === 'whimsical' || state.settings.theme === 'cozy') ? '' : state.settings.theme;
+  renderDashboard(); renderAccounts(); renderCalendar(); renderBills(); renderBuckets(); renderGoals(); renderEvents(); renderPaychecks(); renderAssign(); renderFundingHistory(); renderSimulator(); renderInsights(); renderSettings(); updateHeaderBalance(); appendGardenFooters();
 }
+function appendGardenFooters(){ document.querySelectorAll('.screen').forEach(screen=>{ const existing=screen.querySelector('.garden-footer'); if(existing) existing.remove(); if((state.settings.theme==='whimsical'||state.settings.theme==='cozy') && screen.innerHTML.trim()) screen.insertAdjacentHTML('beforeend','<div class="garden-footer" aria-hidden="true"></div>'); }); }
 function navigate(id){
   activeScreen = id;
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -341,7 +390,8 @@ function navigate(id){
   window.scrollTo({ top:0, behavior:'smooth' });
   render();
 }
-function card(title, body, extra=''){ return `<div class="card ${extra}"><div class="section-head"><h2>${title}</h2></div>${body}</div>`; }
+function card(title, body, extra='', pageId=''){ return `<div class="card ${extra}"><div class="section-head"><h2>${title}</h2></div>${pageId?pageIntro(pageId):''}${body}</div>`; }
+function softBox(title, body, meta='', cls=''){ return `<div class="soft-box ${cls}"><div><strong>${escapeHtml(title)}</strong>${meta?`<small>${meta}</small>`:''}</div><div>${body}</div></div>`; }
 function emptyState(text, action=''){ return `<p class="muted">${escapeHtml(text)}</p>${action}`; }
 function recordRow({title, meta, amount, chips='', actions='', progress=null}){
   return `<div class="row"><div class="row-main"><div class="row-title" title="${escapeHtml(title)}">${escapeHtml(title)}</div><div class="row-meta">${meta || ''}</div>${chips}${progress?progressBar(progress.pct, progress.label):''}</div><div><strong>${amount || ''}</strong><div class="row-actions">${actions || ''}</div></div></div>`;
@@ -359,6 +409,7 @@ function renderDashboard(){
   const upcoming = dashboardUpcomingItems();
   document.getElementById('dashboard').innerHTML = `
     <section class="dashboard-shell">
+      ${pageIntro('dashboard')}
       <div class="dashboard-hero ${hasCoreData ? '' : 'empty'}" role="button" onclick="showFundedDetails(false)">
         <div class="hero-orb">⌖</div>
         <p class="kicker">${hasCoreData ? 'Funded Through' : 'Welcome to Compass'}</p>
@@ -376,7 +427,7 @@ function renderDashboard(){
           <small>Includes expected income</small>
         </button>
         <button class="dash-card balance" onclick="navigate('accounts')">
-          <span>Planning Balance</span>
+          <span>Available to Plan</span>
           <strong>${fmtMoney(planningBalance())}</strong>
           <small>${planningAccountCount()} account${planningAccountCount()===1?'':'s'} included</small>
         </button>
@@ -387,13 +438,19 @@ function renderDashboard(){
         </button>
       </div>
 
+      <div class="dashboard-grid mini-dashboard-grid">
+        <button class="dash-card wealth" onclick="navigate('accounts')"><span>360 Wealth View</span><strong>${fmtMoney(netPosition())}</strong><small>Assets minus debts</small></button>
+        <button class="dash-card reminders" onclick="navigate('calendar')"><span>Due Soon</span><strong>${reminderItems(7).length}</strong><small>Unfunded bills due in 7 days</small></button>
+        <button class="dash-card privacy" onclick="navigate('settings')"><span>Header Balance</span><strong>${state.settings.showAvailableHeader!==false?'Shown':'Hidden'}</strong><small>Privacy setting</small></button>
+      </div>
+
       <div class="dashboard-two">
         <div class="polished-card insight-panel">
           <div class="card-title-row">
             <div><p class="kicker">Compass Insight</p><h2>What matters right now</h2></div>
             <button class="mini-btn" onclick="navigate('insights')">Open</button>
           </div>
-          <div class="insight-feature">${nl2br(insightSummary('advisor'))}</div>
+          <div class="insight-feature advisor-dashboard">${advisorCardsHTML()}</div>
         </div>
         <div class="polished-card next-panel">
           <div class="card-title-row">
@@ -454,20 +511,26 @@ function showFundedDetails(projected=false){
 function renderAccounts(){
   const rows = state.accounts.filter(a=>!a.deleted).map(a => recordRow({
     title:a.name,
-    meta:`Owner: ${ownerName(a.ownerId)} · ${a.includeInPlanning?'Included in planning':'Excluded from planning'}`,
+    meta:`Type: ${ACCOUNT_TYPE_LABEL[accountType(a.type)]} · Owner: ${ownerName(a.ownerId)} · ${a.includeInPlanning?'Included in planning':'Excluded from planning'}`,
     amount:fmtMoney(a.balance),
     chips:`<span class="chip ${a.includeInPlanning?'good':'warn'}">${a.includeInPlanning?'Planning':'Not Planning'}</span>`,
     actions:actionButtons('account',a.id)
   })).join('');
-  document.getElementById('accounts').innerHTML = card('Accounts', `<div class="button-row"><button class="btn primary" onclick="openRecord('account')">Add Account</button></div>${rows || emptyState('No accounts yet.', `<button class="btn primary" onclick="openRecord('account')">Add Account</button>`)}`);
+  const wealth = `<div class="wealth-grid">
+    ${softBox('Available to Plan', `<strong>${fmtMoney(planningBalance())}</strong>`, 'Included planning accounts')}
+    ${softBox('Other Assets', `<strong>${fmtMoney(Math.max(0, assetsTotal()-planningBalance()))}</strong>`, 'Excluded assets and long-term accounts')}
+    ${softBox('Debts', `<strong>-${fmtMoney(debtsTotal())}</strong>`, 'Credit card and loan/debt accounts')}
+    ${softBox('Estimated Net Position', `<strong>${fmtMoney(netPosition())}</strong>`, 'Assets minus debts')}
+  </div>`;
+  document.getElementById('accounts').innerHTML = card('Accounts', `<div class="button-row"><button class="btn primary" onclick="openRecord('account')">Add Account</button></div><h3>360 Wealth View</h3>${wealth}${rows || emptyState('Your path begins here. Add your first account to start planning.', `<button class="btn primary" onclick="openRecord('account')">Add Account</button>`)}`, '', 'accounts');
 }
 function renderBills(){
   const rows = state.bills.filter(b=>!b.deleted).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).map(b=>{
     const occurrenceDate = nextOccurrenceDate(b.dueDate, b.recurrence);
     const st = itemFundingStatus('bill', b, occurrenceDate);
-    return recordRow({ title:b.name, meta:`${PRIORITY_LABEL[b.priority]} · ${b.kind === 'fixed'?'Fixed':'Non-fixed'} · ${PAYMENT_LABEL[normalizePaymentType(b.paymentType)]} · Due ${formatDate(b.dueDate)} · ${recurringLabel(b.recurrence)} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.amount), chips:`<span class="chip ${st.status==='funded'?'good':st.status==='partial'?'warn':''}">${st.status}</span>`, actions:`<button class="btn ghost" onclick="gotoFunding('bill','${b.id}','${occurrenceDate}')">History</button>${actionButtons('bill',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded`} });
+    return recordRow({ title:b.name, meta:`${PRIORITY_LABEL[b.priority]} · ${b.kind === 'fixed'?'Fixed':'Non-fixed'} · Payment Type: ${PAYMENT_LABEL[normalizePaymentType(b.paymentType)]} · Due ${formatDate(b.dueDate)} · ${recurringLabel(b.recurrence)} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.amount), chips:`<span class="chip ${st.status==='funded'?'good':st.status==='partial'?'warn':''}">${st.status}</span>`, actions:`<button class="btn ghost" onclick="gotoFunding('bill','${b.id}','${occurrenceDate}')">History</button>${actionButtons('bill',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded`} });
   }).join('');
-  document.getElementById('bills').innerHTML = card('Bills', `<div class="button-row"><button class="btn primary" onclick="openRecord('bill')">Add Bill</button></div>${rows || emptyState('No bills yet.')}`);
+  document.getElementById('bills').innerHTML = card('Bills', `<div class="button-row"><button class="btn primary" onclick="openRecord('bill')">Add Bill</button></div>${rows || emptyState('No bills mapped yet. Add upcoming obligations so Compass can guide your route.')}`, '', 'bills');
 }
 function nextOccurrenceDate(firstDate, rec){
   if (!isRealDate(firstDate)) return todayISO();
@@ -480,9 +543,9 @@ function renderBuckets(){
   const rows = state.buckets.filter(b=>!b.deleted).map(b=>{
     const date = nextPaycheck()?.occurrenceDate || todayISO();
     const st = itemFundingStatus('bucket', b, date);
-    return recordRow({ title:b.name, meta:`Standard bucket · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.targetAmount), actions:`<button class="btn ghost" onclick="gotoFunding('bucket','${b.id}','${date}')">History</button>${actionButtons('bucket',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded for current cycle`} });
+    return recordRow({ title:b.name, meta:`Standard bucket · ${BUCKET_FREQUENCY_LABEL[bucketFrequency(b.frequency)]} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.targetAmount), actions:`<button class="btn ghost" onclick="gotoFunding('bucket','${b.id}','${date}')">History</button>${actionButtons('bucket',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded for current cycle`} });
   }).join('');
-  document.getElementById('buckets').innerHTML = card('Buckets', `<p class="muted">Buckets are short-term spending allocations like groceries, gas, baby, pets, and household supplies.</p><div class="button-row"><button class="btn primary" onclick="openRecord('bucket')">Add Bucket</button></div>${rows || emptyState('No buckets yet.')}`);
+  document.getElementById('buckets').innerHTML = card('Buckets', `<div class="button-row"><button class="btn primary" onclick="openRecord('bucket')">Add Bucket</button></div>${rows || emptyState('No buckets yet.')}`, '', 'buckets');
 }
 function renderGoals(){
   const rows = state.goals.filter(g=>!g.deleted).map(g=>{
@@ -491,11 +554,11 @@ function renderGoals(){
     const currentPct = Number(g.targetAmount)>0 ? (Number(g.currentAmount||0)/Number(g.targetAmount))*100 : 0;
     return recordRow({ title:g.name, meta:`Due: ${g.dueDate?formatDate(g.dueDate):'Optional'} · Owner: ${ownerName(g.ownerId)} · Contribution: ${fmtMoney(g.plannedContribution)}`, amount:`${fmtMoney(g.currentAmount)} / ${fmtMoney(g.targetAmount)}`, actions:`<button class="btn ghost" onclick="gotoFunding('goal','${g.id}','${date}')">History</button>${actionButtons('goal',g.id)}`, progress:{pct:currentPct,label:`${Math.round(currentPct)}% of goal saved`} });
   }).join('');
-  document.getElementById('goals').innerHTML = card('Savings Goals', `<p class="muted">Savings Goals replace cumulative buckets. Use them for vacation, emergency fund, holidays, repairs, or anything that accumulates over time.</p><div class="button-row"><button class="btn primary" onclick="openRecord('goal')">Add Savings Goal</button></div>${rows || emptyState('No savings goals yet.')}`);
+  document.getElementById('goals').innerHTML = card('Savings Goals', `<div class="button-row"><button class="btn primary" onclick="openRecord('goal')">Add Savings Goal</button></div>${rows || emptyState('No savings goals yet.')}`, '', 'goals');
 }
 function renderEvents(){
   const rows = state.events.filter(e=>!e.deleted).sort((a,b)=>a.startDate.localeCompare(b.startDate)).map(e=> recordRow({ title:e.title, meta:`${formatDate(e.startDate)}${e.endDate?`–${formatDate(e.endDate)}`:''} · Owner: ${ownerName(e.ownerId)} ${e.linkedGoalId?`· Linked goal: ${state.goals.find(g=>g.id===e.linkedGoalId)?.name || 'Missing goal'}`:''}`, actions:actionButtons('event',e.id)})).join('');
-  document.getElementById('events').innerHTML = card('Events', `<div class="button-row"><button class="btn primary" onclick="openRecord('event')">Add Event</button></div>${rows || emptyState('No events yet.')}`);
+  document.getElementById('events').innerHTML = card('Events', `<div class="button-row"><button class="btn primary" onclick="openRecord('event')">Add Event</button></div>${rows || emptyState('No events yet.')}`, '', 'events');
 }
 function renderPaychecks(){
   const rows = state.paychecks.filter(p=>!p.deleted).sort((a,b)=>a.nextPayday.localeCompare(b.nextPayday)).map(p=> recordRow({
@@ -505,7 +568,7 @@ function renderPaychecks(){
     chips:`<span class="chip ${p.status==='received'?'good':''}">${p.status}</span>`,
     actions:`${p.status==='received'?'':`<button class="btn good" onclick="markPaycheckReceived('${p.id}')">Mark Received</button>`}${actionButtons('paycheck',p.id)}`
   })).join('');
-  document.getElementById('paychecks').innerHTML = card('Paychecks', `<div class="button-row"><button class="btn primary" onclick="openRecord('paycheck')">Add Paycheck</button></div>${rows || emptyState('No paychecks yet.')}`);
+  document.getElementById('paychecks').innerHTML = card('Paychecks', `<div class="button-row"><button class="btn primary" onclick="openRecord('paycheck')">Add Paycheck</button></div>${rows || emptyState('No paychecks on the horizon. Add an expected paycheck to power planning.')}`, '', 'paychecks');
 }
 function renderCalendar(){
   const y = calendarCursor.getFullYear(), m = calendarCursor.getMonth();
@@ -527,7 +590,7 @@ function renderCalendar(){
     <div class="calendar-head"><button class="btn ghost" onclick="moveMonth(-1)">←</button><h2>${monthName}</h2><div class="button-row"><button class="btn ghost" onclick="showMonthlyOutlook()">Monthly Outlook</button><button class="btn ghost" onclick="moveMonth(1)">→</button></div></div>
     <div class="button-row"><button class="btn primary" onclick="openRecord('event')">Add Event</button><button class="btn ghost" onclick="openRecord('bill')">Add Bill</button><button class="btn ghost" onclick="openRecord('paycheck')">Add Paycheck</button></div>
     <div class="calendar-grid">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="day-name">${d}</div>`).join('')}${days}</div>
-    <p class="muted small">Double-tap a day to add an event on that date.</p>`);
+    <p class="muted small">Double-tap a day to add an event on that date.</p>`, '', 'calendar');
 }
 function openCalendarRecord(type,id){ if(type==='bill') openRecord('bill',id); else if(type==='paycheck') openRecord('paycheck',id); else if(type==='goal') openRecord('goal',id); else openRecord('event',id); }
 function moveMonth(delta){ calendarCursor.setMonth(calendarCursor.getMonth()+delta); renderCalendar(); }
@@ -556,9 +619,8 @@ function monthlyOutlookData(){
   const incomeTotal = incomes.reduce((sum,p)=>sum+Number(p.amount||0),0);
   const fixedBills = expandRecurring(state.bills, startIso, endIso, 'dueDate').filter(b=>b.kind !== 'non-fixed');
   const fixedTotal = fixedBills.reduce((sum,b)=>sum+Number(b.amount||0),0);
-  const cycles = Math.max(1, incomes.length);
-  const bucketTotal = state.buckets.filter(b=>!b.deleted).reduce((sum,b)=>sum+Number(b.targetAmount||0),0) * cycles;
-  const goalTotal = state.goals.filter(g=>!g.deleted).reduce((sum,g)=>sum+Number(g.plannedContribution||0),0) * cycles;
+  const bucketTotal = state.buckets.filter(b=>!b.deleted).reduce((sum,b)=>sum+bucketMonthlyAmount(b, calendarCursor),0);
+  const goalTotal = state.goals.filter(g=>!g.deleted).reduce((sum,g)=>sum+Number(g.plannedContribution||0),0);
   return { month: calendarCursor.toLocaleString(undefined,{month:'long',year:'numeric'}), incomeTotal, fixedTotal, bucketTotal, goalTotal, net: incomeTotal - fixedTotal - bucketTotal - goalTotal };
 }
 function showMonthlyOutlook(){
@@ -567,27 +629,38 @@ function showMonthlyOutlook(){
     <div class="summary-list">
       ${recordRow({title:'Expected Income', amount:fmtMoney(o.incomeTotal), meta:'Paycheck occurrences in this month'})}
       ${recordRow({title:'Fixed Bills', amount:fmtMoney(o.fixedTotal), meta:'Fixed bill occurrences due this month'})}
-      ${recordRow({title:'Buckets', amount:fmtMoney(o.bucketTotal), meta:'Bucket targets multiplied by paycheck cycles in this month'})}
-      ${recordRow({title:'Savings Goals', amount:fmtMoney(o.goalTotal), meta:'Planned contributions multiplied by paycheck cycles in this month'})}
+      ${recordRow({title:'Buckets', amount:fmtMoney(o.bucketTotal), meta:'Bucket targets based on each bucket frequency'})}
+      ${recordRow({title:'Savings Goals', amount:fmtMoney(o.goalTotal), meta:'Planned contributions for this month'})}
       ${recordRow({title:'Net Outlook', amount:fmtMoney(o.net), meta:'Income minus bills, buckets, and savings goals'})}
     </div>`);
 }
 
+function assignTargetsForSource(selected){
+  return assignTargetsForPaycheck(selected || { id:'balance-source', occurrenceDate:todayISO(), amount:0 });
+}
+function assignPoolForSource(selected){
+  if ((state.settings.assignSourceMode || 'balance') === 'balance') return { total:planningBalance(), base:planningBalance(), paycheckAmount:0, addPaycheck:false, mode:'availableToPlan' };
+  return selected ? assignPoolForPaycheck(selected) : { total:planningBalance(), base:planningBalance(), paycheckAmount:0, addPaycheck:false, mode:'availableToPlan' };
+}
 function renderAssign(){
   const paychecks = upcomingPaychecks(90);
+  const sourceMode = state.settings.assignSourceMode || 'balance';
   const selected = paychecks.find(p=>assignKey(p)===selectedAssignPaycheckId) || paychecks[0];
-  if (selected && selectedAssignPaycheckId !== assignKey(selected)) selectedAssignPaycheckId = assignKey(selected);
-  const targets = selected ? assignTargetsForPaycheck(selected) : [];
-  const pool = selected ? assignPoolForPaycheck(selected) : { total:0, base:planningBalance(), paycheckAmount:0, addPaycheck:false };
-  const totalPool = pool.total;
+  if (sourceMode === 'paycheck' && selected && selectedAssignPaycheckId !== assignKey(selected)) selectedAssignPaycheckId = assignKey(selected);
+  const targets = assignTargetsForSource(sourceMode === 'paycheck' ? selected : null);
+  const pool = assignPoolForSource(sourceMode === 'paycheck' ? selected : null);
+  const sourceSelector = `<div class="funding-source"><label><input type="radio" name="assignSource" value="balance" ${sourceMode==='balance'?'checked':''} onchange="setAssignSource('balance')" /> <strong>Available to Plan</strong><span>Use money already in accounts marked Include in Planning.</span></label><label><input type="radio" name="assignSource" value="paycheck" ${sourceMode==='paycheck'?'checked':''} onchange="setAssignSource('paycheck')" /> <strong>Paycheck</strong><span>Use a specific paycheck to fund upcoming items.</span></label></div>`;
+  const paycheckSelect = sourceMode === 'paycheck' ? `<div class="form-grid"><label>Selected Paycheck<select id="assignPaycheck" onchange="selectedAssignPaycheckId=this.value; renderAssign()">${paychecks.map(p=>`<option value="${assignKey(p)}" ${assignKey(p)===selectedAssignPaycheckId?'selected':''}>${escapeHtml(p.name)} · ${formatDate(p.occurrenceDate)} · ${fmtMoney(p.amount)}</option>`).join('')}</select></label></div>` : '';
+  const help = sourceMode === 'balance' ? 'Using Available to Plan only. No paycheck is required.' : (pool.addPaycheck ? `Available to Plan ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`);
   document.getElementById('assign').innerHTML = card('Assign Money', `
+    ${sourceSelector}${paycheckSelect}
     <p class="muted">Suggested plan sorted by Critical Bills → Important Bills → Buckets → Flexible Bills → Savings Goals. Check items and adjust amounts; remaining funds update immediately.</p>
-    <div class="form-grid"><label>Selected Paycheck<select id="assignPaycheck" onchange="selectedAssignPaycheckId=this.value; renderAssign()">${paychecks.map(p=>`<option value="${assignKey(p)}" ${assignKey(p)===selectedAssignPaycheckId?'selected':''}>${escapeHtml(p.name)} · ${formatDate(p.occurrenceDate)} · ${fmtMoney(p.amount)}</option>`).join('')}</select></label></div>
-    ${selected ? `<div class="assign-sticky"><div class="kicker">Available to Assign</div><div class="assign-total" id="assignRemaining">${fmtMoney(totalPool)}</div><div class="field-help">${pool.addPaycheck ? `Planning Balance ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`}</div></div>` : '<p class="muted">Add a paycheck first.</p>'}
+    <div class="assign-sticky"><div class="kicker">Available to Assign</div><div class="assign-total" id="assignRemaining">${fmtMoney(pool.total)}</div><div class="field-help">${escapeHtml(help)}</div></div>
     <div id="allocationRows">${targets.map((t,i)=>allocationHTML(t,i)).join('') || '<p class="muted">No recommended items to fund before the next paycheck.</p>'}</div>
-    <div class="button-row"><button class="btn primary" onclick="saveFundingSession()">Save Funding Session</button></div>`);
+    <div class="button-row"><button class="btn primary" onclick="saveFundingSession()">Save Funding Session</button></div>`, '', 'assign');
   setTimeout(updateAssignRemaining,0);
 }
+function setAssignSource(mode){ state.settings.assignSourceMode = mode === 'paycheck' ? 'paycheck' : 'balance'; persist('Funding source updated'); }
 function allocationHTML(t,i){
   return `<div class="row allocation-row" data-amount="${t.remaining}" data-type="${t.type}" data-id="${t.id}" data-date="${t.occurrenceDate}" data-name="${escapeHtml(t.name)}">
     <input type="checkbox" class="assign-check" onchange="toggleAllocation(${i})" id="assignCheck${i}" />
@@ -598,7 +671,7 @@ function allocationHTML(t,i){
 function toggleAllocation(){ updateAssignRemaining(); }
 function updateAssignRemaining(){
   const paychecks = upcomingPaychecks(90); const selected = paychecks.find(p=>assignKey(p)===selectedAssignPaycheckId) || paychecks[0];
-  let remaining = assignPoolForPaycheck(selected).total;
+  let remaining = assignPoolForSource((state.settings.assignSourceMode || 'balance') === 'paycheck' ? selected : null).total;
   document.querySelectorAll('#allocationRows .allocation-row').forEach(row=>{
     const checked = row.querySelector('.assign-check')?.checked;
     const val = parseMoney(row.querySelector('.assign-amount')?.value || '0');
@@ -608,7 +681,8 @@ function updateAssignRemaining(){
 }
 function saveFundingSession(){
   const paychecks = upcomingPaychecks(90); const selected = paychecks.find(p=>assignKey(p)===selectedAssignPaycheckId) || paychecks[0];
-  if (!selected) return toast('Add a paycheck first.');
+  const sourceMode = state.settings.assignSourceMode || 'balance';
+  if (sourceMode === 'paycheck' && !selected) return toast('Add a paycheck first or switch funding source to Available to Plan.');
   const allocations = [];
   for (const row of document.querySelectorAll('#allocationRows .allocation-row')) {
     if (!row.querySelector('.assign-check')?.checked) continue;
@@ -618,11 +692,11 @@ function saveFundingSession(){
   }
   if (!allocations.length) return toast('Select at least one item to fund.');
   const sessionId = uid();
-  const pool = assignPoolForPaycheck(selected);
-  const session = { id:sessionId, at:new Date().toISOString(), memberId:OWNER_HOUSEHOLD, paycheckId:selected.id, paycheckName:selected.name, paycheckAmount:Number(selected.amount||0), planningBalance:planningBalance(), poolMode:pool.mode, paycheckIncludedInBalance:!pool.addPaycheck, allocations:allocations.map(a=>({...a})) };
+  const pool = assignPoolForSource(sourceMode === 'paycheck' ? selected : null);
+  const session = { id:sessionId, at:new Date().toISOString(), memberId:OWNER_HOUSEHOLD, paycheckId:sourceMode === 'paycheck' ? selected.id : '', paycheckName:sourceMode === 'paycheck' ? selected.name : 'Available to Plan', paycheckAmount:sourceMode === 'paycheck' ? Number(selected.amount||0) : 0, planningBalance:planningBalance(), poolMode:pool.mode, fundingSource:sourceMode, paycheckIncludedInBalance:sourceMode === 'paycheck' ? !pool.addPaycheck : true, allocations:allocations.map(a=>({...a})) };
   state.fundingSessions.unshift(session);
   allocations.forEach(a=>state.fundingAllocations.push({ id:uid(), sessionId, at:session.at, ...a }));
-  logActivity('Funding session saved', `${selected.name} funded ${allocations.length} items`, { sessionId });
+  logActivity('Funding session saved', `${session.paycheckName} funded ${allocations.length} items`, { sessionId });
   persist('Funding session saved');
   navigate('fundingHistory');
 }
@@ -639,19 +713,18 @@ function renderFundingHistory(filter=null){
     <div class="flow-map">${escapeHtml(fundingMap(s))}</div>
     ${s.allocations.map(a=>recordRow({title:a.targetName, meta:`${TYPE_LABEL[a.targetType] || a.targetType} · ${a.occurrenceDate ? formatDate(a.occurrenceDate) : 'No date'}`, amount:fmtMoney(a.amount)})).join('')}
   `)).join('');
-  document.getElementById('fundingHistory').innerHTML = card('Funding History', `<p class="muted">Funding sessions show what was assigned, when, and from which paycheck.</p>${body || '<p class="muted">No funding history yet.</p>'}`);
+  document.getElementById('fundingHistory').innerHTML = card('Funding History', `${body || '<p class="muted">Nothing funded yet. Once money is assigned, your funding trail will appear here.</p>'}`, '', 'fundingHistory');
 }
 function gotoFunding(type,id,date){ navigate('fundingHistory'); setTimeout(()=>toast('Funding history opened.'),0); }
 function renderSimulator(){
   document.getElementById('simulator').innerHTML = card('Decision Simulator', `
-    <p class="muted">Test a purchase or future plan, then convert it into a bill, bucket, savings goal, event, or paycheck.</p>
     <div class="form-grid">
       <label>Name<input id="simName" maxlength="75" value="${escapeHtml(simulatorDraft?.name || '')}" placeholder="Disneyland Trip" /></label>
       <label>Amount<input id="simAmount" inputmode="decimal" maxlength="10" value="${simulatorDraft?.amount || ''}" placeholder="899.00" /></label>
       <label>Date<input id="simDate" type="date" value="${simulatorDraft?.date || todayISO()}" /></label>
     </div>
     <div class="button-row"><button class="btn primary" onclick="runSimulator()">Run Simulation</button><button class="btn ghost" onclick="convertSimulator()">Convert</button></div>
-    <div id="simOutput">${simulatorDraft?.output || ''}</div>`);
+    <div id="simOutput">${simulatorDraft?.output || ''}</div>`, '', 'simulator');
 }
 function runSimulator(){
   const name = truncate(document.getElementById('simName').value, LIMITS.title);
@@ -675,27 +748,29 @@ function convertSimulator(){
     <div class="button-row right"><button class="btn primary" onclick="continueConvertSimulator()">Next</button></div>`);
 }
 function continueConvertSimulator(){ const type = document.getElementById('convertType').value; closeConfirm(); openRecord(type,'', simulatorDraft); }
+function refreshInsights(){ state.settings.insightsLastRefreshed = new Date().toISOString(); persist('Insights refreshed'); }
+function lastRefreshedText(){ return state.settings.insightsLastRefreshed ? `Last refreshed: ${new Date(state.settings.insightsLastRefreshed).toLocaleString()}` : 'Last refreshed: Not yet'; }
 function renderInsights(){
   const cards = [
     `<div class="insight-card"><p class="kicker">Analyst</p><p>${nl2br(insightSummary('analyst'))}</p><button class="btn ${state.settings.aiMode==='analyst'?'primary':'ghost'}" onclick="state.settings.aiMode='analyst'; persist('AI mode saved')">Set Default</button></div>`,
-    `<div class="insight-card"><p class="kicker">Advisor</p><p>${nl2br(insightSummary('advisor'))}</p><button class="btn ${state.settings.aiMode==='advisor'?'primary':'ghost'}" onclick="state.settings.aiMode='advisor'; persist('AI mode saved')">Set Default</button></div>`,
+    `<div class="insight-card advisor-card"><p class="kicker">Advisor</p>${advisorCardsHTML()}<button class="btn ${state.settings.aiMode==='advisor'?'primary':'ghost'}" onclick="state.settings.aiMode='advisor'; persist('AI mode saved')">Set Default</button></div>`,
     `<div class="insight-card simulator-ai-card"><p class="kicker">Simulator</p><p>${nl2br(insightSummary('simulator'))}</p><label>Ask a what-if question<textarea id="simulatorAIQuestion" maxlength="500" placeholder="What happens if I put $100 extra into savings?
 What if we finance a new vehicle for $650/month?"></textarea></label><div class="button-row"><button class="btn primary" onclick="runSimulatorAI()">Run What-If</button><button class="btn ${state.settings.aiMode==='simulator'?'primary':'ghost'}" onclick="state.settings.aiMode='simulator'; persist('AI mode saved')">Set Default</button></div><div id="simulatorAIOutput" class="ai-output small"></div></div>`
   ];
   document.getElementById('insights').innerHTML = card('Compass Insights', `
-    <p class="muted">Swipe through Analyst, Advisor, and Simulator cards. Simulator is now a free-form what-if planner instead of a duplicate of Decision Simulator.</p>
+    <div class="button-row"><button class="btn primary" onclick="refreshInsights()">Refresh Insights</button><span class="muted small">${escapeHtml(lastRefreshedText())}</span></div>
     <div class="insight-carousel">${cards.join('')}</div>
     <div class="card"><h3>AI Connection</h3><p class="muted">A secure AI proxy can be connected later. Local summaries and what-if estimates are shown until then.</p><label>AI Proxy Endpoint<input id="aiEndpoint" value="${escapeHtml(state.settings.aiEndpoint || '')}" maxlength="250" /></label><button class="btn primary" onclick="state.settings.aiEndpoint=document.getElementById('aiEndpoint').value.trim(); persist('AI endpoint saved')">Save Endpoint</button></div>
-  `);
+  `, '', 'insights');
 }
 function renderSettings(){
   const r = state.settings.fundedRules;
   const members = state.members.filter(m=>!m.system).map(m=>recordRow({title:m.name, meta:'Household member', actions:`<button class="btn danger" onclick="deleteMember('${m.id}')">Remove</button>`})).join('');
-  document.getElementById('settings').innerHTML = `
+  document.getElementById('settings').innerHTML = `<div class="card"><div class="section-head"><h2>Settings</h2></div>${pageIntro('settings')}</div>
     ${card('Planning Rules', `<p class="muted">Configure what counts toward Funded Through and Projected Through.</p><div class="form-grid">
       ${checkSetting('critical','Include Critical Bills',r.critical)}${checkSetting('important','Include Important Bills',r.important)}${checkSetting('flexible','Include Flexible Bills',r.flexible)}${checkSetting('buckets','Include Buckets',r.buckets)}${checkSetting('goals','Include Savings Goals',r.goals)}
     </div><div class="button-row"><button class="btn primary" onclick="savePlanningRules()">Save Planning Rules</button></div>`)}
-    ${card('Theme', `<label>Theme<select id="themeSelect"><option value="cozy" ${state.settings.theme==='cozy'?'selected':''}>Compass</option><option value="classic" ${state.settings.theme==='classic'?'selected':''}>Classic</option><option value="dark" ${state.settings.theme==='dark'?'selected':''}>Dark</option></select></label><button class="btn primary" onclick="state.settings.theme=document.getElementById('themeSelect').value; persist('Theme saved')">Save Theme</button>`)}
+    ${card('Theme & Privacy', `<label>Theme<select id="themeSelect"><option value="whimsical" ${(state.settings.theme==='whimsical'||state.settings.theme==='cozy')?'selected':''}>Whimsical Compass</option><option value="classic" ${state.settings.theme==='classic'?'selected':''}>Classic</option><option value="dark" ${state.settings.theme==='dark'?'selected':''}>Dark</option></select></label><label class="check-label"><input type="checkbox" id="showAvailableHeader" ${state.settings.showAvailableHeader!==false?'checked':''} /> Show Available to Plan in header</label><button class="btn primary" onclick="saveThemePrivacy()">Save Theme & Privacy</button>`)}
     ${calendarDisplaySettingsCard()}
     ${card('Household', `<label>Household Name<input id="householdName" maxlength="60" value="${escapeHtml(state.household.name)}" /></label><button class="btn primary" onclick="saveHouseholdName()">Save Household</button><h3>Members</h3><div class="form-grid"><label>Add Member<input id="newMemberName" maxlength="40" placeholder="Member name" /></label><button class="btn primary" onclick="addMember()">Add Member</button></div>${members || '<p class="muted">No household members yet.</p>'}<div class="card danger-zone"><h3>Delete Household</h3><p class="muted">This resets all Compass data. Export a backup first.</p><button class="btn danger" onclick="deleteHousehold()">Delete Household / Reset Data</button></div>`)}
     ${card('Backup', `<p class="muted">Export everything. Imports are validated, migrated, and previewed before changing live data.</p><div class="button-row"><button class="btn primary" onclick="exportBackup()">Export Everything</button><label class="btn ghost">Choose Backup<input type="file" accept="application/json" class="hidden" onchange="previewImport(event)" /></label></div><div id="importPreview"></div>`)}
@@ -704,6 +779,7 @@ function renderSettings(){
 }
 function checkSetting(key,label,checked){ return `<label class="check-label"><input type="checkbox" id="rule_${key}" ${checked?'checked':''} /> ${label}</label>`; }
 function savePlanningRules(){ ['critical','important','flexible','buckets','goals'].forEach(k=>state.settings.fundedRules[k]=document.getElementById(`rule_${k}`).checked); persist('Planning rules saved'); }
+function saveThemePrivacy(){ state.settings.theme=document.getElementById('themeSelect').value; state.settings.showAvailableHeader=document.getElementById('showAvailableHeader').checked; state.settings.themePromptSeen=true; persist('Theme & privacy saved'); }
 
 function colorSelect(id, current){
   return `<select id="${id}">${Object.keys(COLOR_OPTIONS).map(k=>`<option value="${k}" ${current===k?'selected':''}>${k[0].toUpperCase()+k.slice(1)}</option>`).join('')}</select>`;
@@ -751,10 +827,10 @@ function buildForm(type, item){
   const nameVal = escapeHtml(item.name || item.title || '');
   const amountVal = item.amount ?? item.targetAmount ?? '';
   if (type === 'account') return formWrap(`
-    <div class="form-grid"><label>Account Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Balance<input name="balance" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.balance ?? amountVal ?? '0')}" /></label><label>Include in Planning<select name="includeInPlanning"><option value="true" ${item.includeInPlanning!==false?'selected':''}>Yes</option><option value="false" ${item.includeInPlanning===false?'selected':''}>No</option></select></label>${commonOwner}</div>`);
+    <div class="form-grid"><label>Account Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Account Type<select name="type" required>${ACCOUNT_TYPES.map(t=>`<option value="${t}" ${accountType(item.type)===t?'selected':''}>${ACCOUNT_TYPE_LABEL[t]}</option>`).join('')}</select></label><label>Balance<input name="balance" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.balance ?? amountVal ?? '0')}" /></label><label>Include in Planning<select name="includeInPlanning"><option value="true" ${item.includeInPlanning!==false?'selected':''}>Yes</option><option value="false" ${item.includeInPlanning===false?'selected':''}>No</option></select></label>${commonOwner}</div>`);
   if (type === 'bill') return formWrap(`
     <div class="form-grid"><label>Bill Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Amount<input name="amount" inputmode="decimal" maxlength="10" required value="${escapeHtml(amountVal || '')}" /></label><label>Due Date<input name="dueDate" type="date" required value="${escapeHtml(item.dueDate || item.date || todayISO())}" /></label><label>Fixed / Non-fixed<select name="kind" required><option value="fixed" ${item.kind!=='non-fixed'?'selected':''}>Fixed</option><option value="non-fixed" ${item.kind==='non-fixed'?'selected':''}>Non-fixed</option></select></label><label>Recurring<select name="recurrence" required>${RECURRENCE.map(r=>`<option value="${r}" ${(item.recurrence||'one-time')===r?'selected':''}>${recurringLabel(r)}</option>`).join('')}</select></label><label>Priority<select name="priority" required>${PRIORITIES.map(p=>`<option value="${p}" ${(item.priority||'important')===p?'selected':''}>${PRIORITY_LABEL[p]}</option>`).join('')}</select></label><label>Payment Type<select name="paymentType" required>${PAYMENT_TYPES.map(pt=>`<option value="${pt}" ${normalizePaymentType(item.paymentType)===pt?'selected':''}>${PAYMENT_LABEL[pt]}</option>`).join('')}</select></label>${commonOwner}</div>`);
-  if (type === 'bucket') return formWrap(`<div class="form-grid"><label>Bucket Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label>${commonOwner}</div>`);
+  if (type === 'bucket') return formWrap(`<div class="form-grid"><label>Bucket Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Bucket Frequency<select name="frequency" required>${BUCKET_FREQUENCIES.map(f=>`<option value="${f}" ${bucketFrequency(item.frequency)===f?'selected':''}>${BUCKET_FREQUENCY_LABEL[f]}</option>`).join('')}</select></label>${commonOwner}</div>`);
   if (type === 'goal') return formWrap(`<div class="form-grid"><label>Goal Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Current Amount<input name="currentAmount" inputmode="decimal" maxlength="10" value="${escapeHtml(item.currentAmount ?? 0)}" /></label><label>Planned Contribution<input name="plannedContribution" inputmode="decimal" maxlength="10" value="${escapeHtml(item.plannedContribution ?? 0)}" /></label><label>Optional Due Date<input name="dueDate" type="date" value="${escapeHtml(item.dueDate || item.date || '')}" /></label>${commonOwner}</div>`);
   if (type === 'event') return formWrap(`<div class="form-grid"><label>Event Title<input name="title" maxlength="75" required value="${escapeHtml(item.title || item.name || '')}" /></label><label>Start Date<input name="startDate" type="date" required value="${escapeHtml(item.startDate || item.date || todayISO())}" /></label><label>End Date<input name="endDate" type="date" value="${escapeHtml(item.endDate || '')}" /></label>${commonOwner}<label>Linked Savings Goal<select name="linkedGoalId"><option value="">None</option>${state.goals.filter(g=>!g.deleted).map(g=>`<option value="${g.id}" ${item.linkedGoalId===g.id?'selected':''}>${escapeHtml(g.name)}</option>`).join('')}</select></label></div>`);
   if (type === 'paycheck') return formWrap(`<div class="form-grid"><label>Paycheck Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Amount<input name="amount" inputmode="decimal" maxlength="10" required value="${escapeHtml(amountVal || '')}" /></label><label>Next Payday<input name="nextPayday" type="date" required value="${escapeHtml(item.nextPayday || item.date || todayISO())}" /></label><label>Frequency<select name="frequency" required>${RECURRENCE.filter(r=>r!=='one-time').map(r=>`<option value="${r}" ${(item.frequency||'biweekly')===r?'selected':''}>${recurringLabel(r)}</option>`).join('')}</select></label><label>Status<select name="status"><option value="expected" ${(item.status||'expected')==='expected'?'selected':''}>Expected</option><option value="received" ${item.status==='received'?'selected':''}>Received</option></select></label>${commonOwner}</div>`);
@@ -787,9 +863,9 @@ function validateAndBuildRecord(type, d, id){
   const requireDate = (val, label) => { if(!isRealDate(val)) errors.push(`${label} must be a real calendar date.`); return val; };
   const optionalDate = (val, label) => { if(!val) return ''; if(!isRealDate(val)) errors.push(`${label} must be a real calendar date.`); return val; };
   let record={id, ownerId, deleted:false};
-  if (type==='account') record = { ...record, name:requireText(d.name,'Account name'), balance:requireMoney(d.balance,'Balance'), includeInPlanning:d.includeInPlanning === 'true' };
+  if (type==='account') record = { ...record, name:requireText(d.name,'Account name'), type:accountType(d.type), balance:requireMoney(d.balance,'Balance'), includeInPlanning:d.includeInPlanning === 'true' };
   if (type==='bill') record = { ...record, name:requireText(d.name,'Bill name'), amount:requireMoney(d.amount,'Amount'), dueDate:requireDate(d.dueDate,'Due date'), kind:['fixed','non-fixed'].includes(d.kind)?d.kind:'fixed', recurrence:RECURRENCE.includes(d.recurrence)?d.recurrence:'one-time', priority:PRIORITIES.includes(d.priority)?d.priority:'important', paymentType:normalizePaymentType(d.paymentType) };
-  if (type==='bucket') record = { ...record, name:requireText(d.name,'Bucket name'), targetAmount:requireMoney(d.targetAmount,'Target amount') };
+  if (type==='bucket') record = { ...record, name:requireText(d.name,'Bucket name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), frequency:bucketFrequency(d.frequency) };
   if (type==='goal') record = { ...record, name:requireText(d.name,'Goal name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), currentAmount:optionalMoney(d.currentAmount,'Current amount'), plannedContribution:optionalMoney(d.plannedContribution,'Planned contribution'), dueDate:optionalDate(d.dueDate,'Due date'), linkedEventId:d.linkedGoalId||'' };
   if (type==='event') { const start = requireDate(d.startDate,'Start date'); const end = optionalDate(d.endDate,'End date'); if(start && end && parseDate(end)<parseDate(start)) errors.push('End date cannot be before start date.'); record = { ...record, title:requireText(d.title,'Event title',LIMITS.title), startDate:start, endDate:end, linkedGoalId:d.linkedGoalId || '' }; }
   if (type==='paycheck') record = { ...record, name:requireText(d.name,'Paycheck name'), amount:requireMoney(d.amount,'Amount'), nextPayday:requireDate(d.nextPayday,'Next payday'), frequency:['weekly','biweekly','monthly'].includes(d.frequency)?d.frequency:'biweekly', status:['expected','received'].includes(d.status)?d.status:'expected' };
@@ -911,9 +987,9 @@ function migrateBackup(input){
   if(!st.members.some(m=>m.id===OWNER_HOUSEHOLD)) st.members.unshift({id:OWNER_HOUSEHOLD,name:'Household',system:true});
   st.settings = { ...base.settings, ...(src.settings || {}), theme: src.theme || src.settings?.theme || base.settings.theme, aiEndpoint:src.aiEndpoint || src.settings?.aiEndpoint || '' };
   st.settings.fundedRules = { ...base.settings.fundedRules, ...(src.settings?.fundedRules || {}) };
-  st.accounts = arr(src.accounts).map(a=>({ id:a.id||uid(), name:a.name||'Account', balance:a.balance ?? a.amount ?? 0, includeInPlanning:a.includeInPlanning ?? (String(a.type||'').toLowerCase().includes('saving') ? false : true), ownerId:a.ownerId||OWNER_HOUSEHOLD }));
+  st.accounts = arr(src.accounts).map(a=>({ id:a.id||uid(), name:a.name||'Account', type:accountType(a.type), balance:a.balance ?? a.amount ?? 0, includeInPlanning:a.includeInPlanning ?? (!['investment','401k','hsa','other-asset','credit-card','loan-debt'].includes(accountType(a.type))), ownerId:a.ownerId||OWNER_HOUSEHOLD }));
   st.bills = arr(src.bills).map(b=>({ id:b.id||uid(), name:b.name||'Bill', amount:b.amount||0, dueDate:b.dueDate||b.date||todayISO(), kind:b.kind || (b.category==='variable'?'non-fixed':'fixed'), recurrence: normalizeRecurrence(b.recurrence || b.recurring || 'one-time'), priority: normalizePriority(b.priority || (b.category==='fixed'?'important':'flexible')), paymentType:normalizePaymentType(b.paymentType || b.payType || b.billPayType || 'unknown'), ownerId:b.ownerId||OWNER_HOUSEHOLD }));
-  st.buckets = arr(src.buckets).map(b=>({ id:b.id||uid(), name:b.name||'Bucket', targetAmount:b.targetAmount ?? b.amount ?? 0, ownerId:b.ownerId||OWNER_HOUSEHOLD }));
+  st.buckets = arr(src.buckets).map(b=>({ id:b.id||uid(), name:b.name||'Bucket', targetAmount:b.targetAmount ?? b.amount ?? 0, frequency:bucketFrequency(b.frequency), ownerId:b.ownerId||OWNER_HOUSEHOLD }));
   st.goals = arr(src.goals).map(g=>({ id:g.id||uid(), name:g.name||'Savings Goal', targetAmount:g.targetAmount ?? g.target ?? g.amount ?? 0, currentAmount:g.currentAmount ?? g.current ?? 0, plannedContribution:g.plannedContribution ?? g.contribution ?? 0, dueDate:g.dueDate||g.targetDate||'', linkedEventId:g.linkedEventId||'', ownerId:g.ownerId||OWNER_HOUSEHOLD }));
   st.events = arr(src.events).map(e=>({ id:e.id||uid(), title:e.title||e.name||'Event', startDate:e.startDate||e.date||todayISO(), endDate:e.endDate||'', linkedGoalId:e.linkedGoalId||'', ownerId:e.ownerId||OWNER_HOUSEHOLD }));
   st.paychecks = arr(src.paychecks).map(p=>({ id:p.id||uid(), name:p.name || p.person || 'Paycheck', amount:p.amount||0, nextPayday:p.nextPayday||p.nextDate||p.date||todayISO(), frequency: normalizeRecurrence(p.frequency || p.recurrence || p.recurring || 'biweekly') === 'one-time' ? 'biweekly' : normalizeRecurrence(p.frequency || p.recurrence || p.recurring || 'biweekly'), status:p.status||'expected', balanceUpdatedOnReceive:p.balanceUpdatedOnReceive===true, receivedAccountId:p.receivedAccountId||'', receivedOccurrenceDate:p.receivedOccurrenceDate||p.nextPayday||'', ownerId:p.ownerId||OWNER_HOUSEHOLD }));
@@ -936,14 +1012,18 @@ function cleanState(input){
   const validOwner=(id)=>st.members.some(m=>m.id===id)?id:OWNER_HOUSEHOLD;
   const num=(v,label)=>{ const p=parseMoney(String(v??0)); if(!p.ok){ warnings.push(`${label} had an invalid amount and was set to 0.`); return 0;} return p.value; };
   const date=(v,label,required=true)=>{ if(!v&&!required)return ''; if(!isRealDate(v)){ warnings.push(`${label} had an invalid date and was set to today.`); return todayISO(); } return v; };
-  st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), balance:num(a.balance,'Account balance'), includeInPlanning:a.includeInPlanning!==false, ownerId:validOwner(a.ownerId) }));
+  st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), type:accountType(a.type), balance:num(a.balance,'Account balance'), includeInPlanning:a.includeInPlanning!==false, ownerId:validOwner(a.ownerId) }));
   st.bills = st.bills.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bill',LIMITS.name), amount:num(b.amount,'Bill amount'), dueDate:date(b.dueDate,'Bill due date'), kind:b.kind==='non-fixed'?'non-fixed':'fixed', recurrence:normalizeRecurrence(b.recurrence), priority:normalizePriority(b.priority), paymentType:normalizePaymentType(b.paymentType), ownerId:validOwner(b.ownerId) }));
-  st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), ownerId:validOwner(b.ownerId) }));
+  st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), frequency:bucketFrequency(b.frequency), ownerId:validOwner(b.ownerId) }));
   st.goals = st.goals.map(g=>({ id:g.id||uid(), name:truncate(g.name||'Savings Goal',LIMITS.name), targetAmount:num(g.targetAmount,'Goal target'), currentAmount:num(g.currentAmount,'Goal current'), plannedContribution:num(g.plannedContribution,'Goal contribution'), dueDate:g.dueDate?date(g.dueDate,'Goal due date',false):'', linkedEventId:g.linkedEventId||'', ownerId:validOwner(g.ownerId) }));
   st.events = st.events.map(e=>({ id:e.id||uid(), title:truncate(e.title||'Event',LIMITS.title), startDate:date(e.startDate,'Event start date'), endDate:e.endDate?date(e.endDate,'Event end date',false):'', linkedGoalId:e.linkedGoalId||'', ownerId:validOwner(e.ownerId) }));
   st.paychecks = st.paychecks.map(p=>({ id:p.id||uid(), name:truncate(p.name||'Paycheck',LIMITS.name), amount:num(p.amount,'Paycheck amount'), nextPayday:date(p.nextPayday,'Paycheck date'), frequency:['weekly','biweekly','monthly'].includes(p.frequency)?p.frequency:'biweekly', status:p.status==='received'?'received':'expected', balanceUpdatedOnReceive:p.balanceUpdatedOnReceive===true, receivedAccountId:p.receivedAccountId||'', receivedOccurrenceDate:p.receivedOccurrenceDate||p.nextPayday||'', ownerId:validOwner(p.ownerId) }));
   st.settings = { ...defaultState().settings, ...(st.settings||{}) };
   st.settings.fundedRules = { ...defaultState().settings.fundedRules, ...(st.settings.fundedRules||{}) };
+  if (st.settings.theme === 'cozy') st.settings.theme = 'whimsical';
+  st.settings.showAvailableHeader = st.settings.showAvailableHeader !== false;
+  st.settings.themePromptSeen = st.settings.themePromptSeen === true;
+  st.settings.assignSourceMode = st.settings.assignSourceMode === 'paycheck' ? 'paycheck' : 'balance';
   st.settings.calendarColorMode = CALENDAR_COLOR_MODES.includes(st.settings.calendarColorMode) ? st.settings.calendarColorMode : 'recordType';
   st.settings.calendarColors = { ...defaultState().settings.calendarColors, ...(st.settings.calendarColors||{}) };
   st.settings.calendarColors.recordType = { ...defaultState().settings.calendarColors.recordType, ...(st.settings.calendarColors.recordType||{}) };
@@ -953,6 +1033,13 @@ function cleanState(input){
   return { ok:errors.length===0, errors, warnings, state:st };
 }
 function showLinkedImportWarning(){ }
+function maybeShowThemePrompt(){
+  if (HAD_EXISTING_STATE || state.settings.themePromptSeen) return;
+  showInfoModal('Try Compass in Dark Mode', `<p>Many people prefer the dark layout for a calmer, softer planning experience. You can switch themes anytime in Settings.</p><div class="button-row right"><button class="btn primary" onclick="openThemeSettingsFromPrompt()">Go to Settings</button><button class="btn ghost" onclick="dismissThemePrompt()">Not now</button></div>`);
+}
+function dismissThemePrompt(){ state.settings.themePromptSeen = true; closeConfirm(); persist('Theme prompt dismissed'); }
+function openThemeSettingsFromPrompt(){ state.settings.themePromptSeen = true; closeConfirm(); persist('Opening Settings'); navigate('settings'); }
+
 function setupEvents(){
   document.querySelectorAll('[data-nav]').forEach(btn=>btn.addEventListener('click',e=>navigate(e.currentTarget.dataset.nav)));
   document.getElementById('moreBtn').addEventListener('click', openDrawer);
@@ -967,8 +1054,9 @@ function closeDrawer(){ document.getElementById('sideDrawer').classList.remove('
 window.openRecord = openRecord; window.deleteRecord = deleteRecord; window.undoDelete = undoDelete; window.markPaycheckReceived = markPaycheckReceived; window.previewReceivedBalance = previewReceivedBalance; window.finishPaycheckReceivedFlow = finishPaycheckReceivedFlow;
 window.navigate = navigate; window.moveMonth = moveMonth; window.showMonthlyOutlook = showMonthlyOutlook; window.openCalendarRecord = openCalendarRecord; window.showFundedDetails = showFundedDetails;
 window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding;
-window.runSimulator = runSimulator; window.convertSimulator = convertSimulator; window.continueConvertSimulator = continueConvertSimulator; window.runSimulatorAI = runSimulatorAI;
+window.runSimulator = runSimulator; window.setAssignSource = setAssignSource; window.refreshInsights = refreshInsights; window.saveThemePrivacy = saveThemePrivacy; window.explainAvailableToPlan = explainAvailableToPlan; window.dismissThemePrompt = dismissThemePrompt; window.openThemeSettingsFromPrompt = openThemeSettingsFromPrompt; window.convertSimulator = convertSimulator; window.continueConvertSimulator = continueConvertSimulator; window.runSimulatorAI = runSimulatorAI;
 window.savePlanningRules = savePlanningRules; window.saveCalendarDisplaySettings = saveCalendarDisplaySettings; window.saveHouseholdName = saveHouseholdName; window.addMember = addMember; window.deleteMember = deleteMember; window.deleteHousehold = deleteHousehold;
 window.exportBackup = exportBackup; window.previewImport = previewImport; window.commitImport = commitImport; window.closeDialog = closeDialog; window.closeConfirm = closeConfirm; window.persist = persist;
 setupEvents();
 render();
+setTimeout(maybeShowThemePrompt, 250);

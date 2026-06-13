@@ -1,24 +1,46 @@
-# Compass v6.1
+# Compass v6.3
 
-Visual polish release for Compass.
+Static GitHub Pages build for Compass, the household planning app focused on answering: "Am I okay until the next paycheck?"
 
-## Upload to GitHub Pages
-Upload only these files to the repository root:
+## Deploy to GitHub Pages
+Upload these files from inside this folder to the root of your GitHub Pages repository:
 
 - `index.html`
 - `styles.css`
 - `app.js`
 
-Do not upload the outer folder itself.
+Do not upload the enclosing folder unless your Pages repo is configured to serve from that folder.
 
-## v6.1 changes
-- Dashboard is now the only top-level page.
-- All other sections live inside the left-side Menu.
-- Redesigned dashboard to look polished even before data is imported.
-- Added setup/onboarding card when no real planning data exists.
-- Improved Funded Through hero card, Projected Through, Planning Balance, Next Paycheck, Compass Insight, Coming Up, and Funding Map visuals.
-- Preserves all v6 logic, validation, import/export migration, planning rules, funding sessions, decision simulator, and records.
+## v6.3 Highlights
 
+- Whimsical Compass visual polish: softer cards/buttons, vine accents, and garden footer art.
+- Persistent header pill: **Available to Plan**, calculated only from accounts marked **Include in Planning**.
+- Privacy setting to show/hide the Available to Plan header amount.
+- First-time user prompt encouraging users to try Dark Mode, with Settings navigation.
+- 360 Wealth View with account types for checking, savings, cash, credit card, investments, 401(k)/retirement, HSA, other assets, and debts.
+- Advisor summary redesigned into softer action cards.
+- Payment Type wording changed from `Unknown` to **Not Set**.
+- Assign Money now supports two funding source modes: **Available to Plan** or **Paycheck**.
+- Bucket frequency support: Weekly, Per Paycheck Cycle, or Monthly.
+- Monthly Outlook bucket math now uses bucket frequency instead of multiplying by every paycheck occurrence.
+- Compass Insights includes a **Refresh Insights** button and last-refreshed timestamp.
+- 1–2 sentence purpose descriptions added to tabs.
+- In-app Due Soon reminder surface on the Dashboard.
 
-## v6.2 Simulator AI Update
-Compass Insights now has a Simulator card with a free-form what-if prompt. It compares current Funded Through and Projected Through dates against scenario impacts such as one-time spending, extra savings transfers, added income, or recurring monthly payments. This does not replace the structured Decision Simulator, which remains the convert-to-record workflow.
+## Data Integrity Guardrails Preserved
+
+- LocalStorage persistence.
+- Export everything backup.
+- Import preview before commit.
+- Schema migration into v6.3.
+- Backup size limit.
+- Record count limits.
+- String length limits.
+- Normal dollar amount validation.
+- Scientific notation rejection.
+- Real calendar date validation.
+- Invalid import data does not write to live data.
+
+## Notes
+
+This version does not include Supabase, Plaid, real push notifications, or a backend AI proxy. Those remain future cloud/PWA releases.
