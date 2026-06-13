@@ -1,40 +1,24 @@
-# The Cozy Ledger v5
+# Compass v6.1
 
-Upload these files to your GitHub Pages repository root:
-- index.html
-- styles.css
-- app.js
+Visual polish release for Compass.
 
-## v5 includes
-- Cleaner phone navigation: Dashboard and Accounts stay visible; the rest lives in a More sidebar.
-- Delete buttons everywhere.
-- Edit buttons everywhere.
-- Archive items instead of deleting.
-- Undo after delete.
-- Search and sort lists.
-- Empty states.
-- Save confirmations.
-- Mark bills/paychecks by status.
-- Partial funding display for bills.
-- Monthly calendar view.
-- Financial runway/funded-through date.
-- Today's Financial Mission.
-- Financial Inbox.
-- Can We Afford It? simulator.
-- Assign Money visual flow.
-- What Changed? history feed.
-- AI Guide with local summary fallback.
-- Import/export backup and daily backup snapshot.
-- Theme toggle: Cozy Ledger, Classic, Dark Mode.
+## Upload to GitHub Pages
+Upload only these files to the repository root:
 
-## Important
-This is a static GitHub Pages app using browser localStorage. Export backups before replacing versions.
+- `index.html`
+- `styles.css`
+- `app.js`
+
+Do not upload the outer folder itself.
+
+## v6.1 changes
+- Dashboard is now the only top-level page.
+- All other sections live inside the left-side Menu.
+- Redesigned dashboard to look polished even before data is imported.
+- Added setup/onboarding card when no real planning data exists.
+- Improved Funded Through hero card, Projected Through, Planning Balance, Next Paycheck, Compass Insight, Coming Up, and Funding Map visuals.
+- Preserves all v6 logic, validation, import/export migration, planning rules, funding sessions, decision simulator, and records.
 
 
-## v5.1 Patch
-- Import backup now accepts older Cozy Ledger backup formats and v5 backups.
-- Converts old fields like `balance`, `dueDate`, and `nextDate` into the v5 schema.
-
-
-## v5.2 Import Patch
-This version includes a migration importer for older Cozy Ledger backups that used fields like `balance`, `dueDate`, `nextDate`, `person`, `frequency`, and `recurrence`.
+## v6.2 Simulator AI Update
+Compass Insights now has a Simulator card with a free-form what-if prompt. It compares current Funded Through and Projected Through dates against scenario impacts such as one-time spending, extra savings transfers, added income, or recurring monthly payments. This does not replace the structured Decision Simulator, which remains the convert-to-record workflow.
