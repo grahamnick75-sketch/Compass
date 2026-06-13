@@ -1,7 +1,7 @@
-/* Compass v6.3 - visual polish, data-safe planning, and 360 Wealth View */
+/* Compass v6.4 - settings cleanup, mobile header polish, and cottagecore theme */
 const STORAGE_KEY = 'compass_v6_state';
 const HAD_EXISTING_STATE = !!localStorage.getItem(STORAGE_KEY);
-const SCHEMA_VERSION = '6.3.0';
+const SCHEMA_VERSION = '6.4.0';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const LIMITS = {
   name: 60, title: 75, notes: 500, householdName: 60, memberName: 40,
@@ -22,7 +22,6 @@ const DEBT_TYPES = ['credit-card','loan-debt'];
 const BUCKET_FREQUENCIES = ['weekly','paycheck','monthly'];
 const BUCKET_FREQUENCY_LABEL = { weekly:'Weekly', paycheck:'Per Paycheck Cycle', monthly:'Monthly' };
 const PAGE_DESCRIPTIONS = {
-  dashboard:'Your dashboard gives you a quick read on whether your current planning money can cover what is coming next. Start here when you want to know if you are okay until the next paycheck.',
   accounts:'Accounts show the money Compass can see in your household plan. Mark only the accounts you want included in day-to-day planning so Available to Plan stays accurate.',
   calendar:'The calendar helps you see when bills, paychecks, goals, and events are coming up. Use it to spot tight weeks before they surprise you.',
   bills:'Bills are the obligations your plan needs to protect first. Use priority levels to tell Compass what matters most: Critical bills are funded first, then Important bills, then Flexible bills.',
@@ -33,8 +32,7 @@ const PAGE_DESCRIPTIONS = {
   assign:'Assign Money turns your available cash into a clear funding plan. Choose whether you are assigning from Available to Plan or from a specific paycheck, then Compass will help prioritize bills, buckets, and goals.',
   fundingHistory:'Funding History shows where assigned money has gone over time. Use it to understand what has already been funded and how each paycheck or planning balance was used.',
   simulator:'Decision Simulator helps you test a possible financial choice before you commit to it. Use it to see how a new bill, paycheck, bucket, goal, or event could affect your plan.',
-  insights:'Compass Insights summarizes what your plan is telling you. Use Analyst for a factual overview, Advisor for next funding recommendations, and Simulator for what-if questions.',
-  settings:'Settings control how Compass behaves, calculates, displays, and protects your data. Use this page to adjust planning rules, privacy, themes, backups, and import options.'
+  insights:'Compass Insights summarizes what your plan is telling you. Use Analyst for a factual overview, Advisor for next funding recommendations, and Simulator for what-if questions.'
 };
 const COLOR_OPTIONS = { blue:'#2563eb', green:'#15803d', orange:'#ea580c', purple:'#7c3aed', red:'#dc2626', gold:'#ca8a04', teal:'#0f766e', gray:'#64748b' };
 const OWNER_HOUSEHOLD = 'household';
@@ -380,7 +378,7 @@ function render(){
   document.documentElement.dataset.theme = (state.settings.theme === 'whimsical' || state.settings.theme === 'cozy') ? '' : state.settings.theme;
   renderDashboard(); renderAccounts(); renderCalendar(); renderBills(); renderBuckets(); renderGoals(); renderEvents(); renderPaychecks(); renderAssign(); renderFundingHistory(); renderSimulator(); renderInsights(); renderSettings(); updateHeaderBalance(); appendGardenFooters();
 }
-function appendGardenFooters(){ document.querySelectorAll('.screen').forEach(screen=>{ const existing=screen.querySelector('.garden-footer'); if(existing) existing.remove(); if((state.settings.theme==='whimsical'||state.settings.theme==='cozy') && screen.innerHTML.trim()) screen.insertAdjacentHTML('beforeend','<div class="garden-footer" aria-hidden="true"></div>'); }); }
+function appendGardenFooters(){ document.querySelectorAll('.screen').forEach(screen=>{ const existing=screen.querySelector('.garden-footer'); if(existing) existing.remove(); if((state.settings.theme==='whimsical'||state.settings.theme==='cozy'||state.settings.theme==='cottage') && screen.innerHTML.trim()) screen.insertAdjacentHTML('beforeend','<div class="garden-footer" aria-hidden="true"></div>'); }); }
 function navigate(id){
   activeScreen = id;
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -409,7 +407,6 @@ function renderDashboard(){
   const upcoming = dashboardUpcomingItems();
   document.getElementById('dashboard').innerHTML = `
     <section class="dashboard-shell">
-      ${pageIntro('dashboard')}
       <div class="dashboard-hero ${hasCoreData ? '' : 'empty'}" role="button" onclick="showFundedDetails(false)">
         <div class="hero-orb">⌖</div>
         <p class="kicker">${hasCoreData ? 'Funded Through' : 'Welcome to Compass'}</p>
@@ -764,32 +761,70 @@ What if we finance a new vehicle for $650/month?"></textarea></label><div class=
   `, '', 'insights');
 }
 function renderSettings(){
-  const r = state.settings.fundedRules;
-  const members = state.members.filter(m=>!m.system).map(m=>recordRow({title:m.name, meta:'Household member', actions:`<button class="btn danger" onclick="deleteMember('${m.id}')">Remove</button>`})).join('');
-  document.getElementById('settings').innerHTML = `<div class="card"><div class="section-head"><h2>Settings</h2></div>${pageIntro('settings')}</div>
-    ${card('Planning Rules', `<p class="muted">Configure what counts toward Funded Through and Projected Through.</p><div class="form-grid">
-      ${checkSetting('critical','Include Critical Bills',r.critical)}${checkSetting('important','Include Important Bills',r.important)}${checkSetting('flexible','Include Flexible Bills',r.flexible)}${checkSetting('buckets','Include Buckets',r.buckets)}${checkSetting('goals','Include Savings Goals',r.goals)}
-    </div><div class="button-row"><button class="btn primary" onclick="savePlanningRules()">Save Planning Rules</button></div>`)}
-    ${card('Theme & Privacy', `<label>Theme<select id="themeSelect"><option value="whimsical" ${(state.settings.theme==='whimsical'||state.settings.theme==='cozy')?'selected':''}>Whimsical Compass</option><option value="classic" ${state.settings.theme==='classic'?'selected':''}>Classic</option><option value="dark" ${state.settings.theme==='dark'?'selected':''}>Dark</option></select></label><label class="check-label"><input type="checkbox" id="showAvailableHeader" ${state.settings.showAvailableHeader!==false?'checked':''} /> Show Available to Plan in header</label><button class="btn primary" onclick="saveThemePrivacy()">Save Theme & Privacy</button>`)}
-    ${calendarDisplaySettingsCard()}
-    ${card('Household', `<label>Household Name<input id="householdName" maxlength="60" value="${escapeHtml(state.household.name)}" /></label><button class="btn primary" onclick="saveHouseholdName()">Save Household</button><h3>Members</h3><div class="form-grid"><label>Add Member<input id="newMemberName" maxlength="40" placeholder="Member name" /></label><button class="btn primary" onclick="addMember()">Add Member</button></div>${members || '<p class="muted">No household members yet.</p>'}<div class="card danger-zone"><h3>Delete Household</h3><p class="muted">This resets all Compass data. Export a backup first.</p><button class="btn danger" onclick="deleteHousehold()">Delete Household / Reset Data</button></div>`)}
-    ${card('Backup', `<p class="muted">Export everything. Imports are validated, migrated, and previewed before changing live data.</p><div class="button-row"><button class="btn primary" onclick="exportBackup()">Export Everything</button><label class="btn ghost">Choose Backup<input type="file" accept="application/json" class="hidden" onchange="previewImport(event)" /></label></div><div id="importPreview"></div>`)}
-    ${card('Activity Log', state.activityLog.slice(0,25).map(a=>recordRow({title:a.action, meta:`${new Date(a.at).toLocaleString()} · ${ownerName(a.memberId)} · ${escapeHtml(a.detail)}`})).join('') || '<p class="muted">No activity yet.</p>')}
-  `;
+  const topic = (key,title,summary,status='') => `<button class="settings-topic" onclick="openSettingsTopic('${key}')"><div><strong>${escapeHtml(title)}</strong><span>${escapeHtml(summary)}</span>${status?`<small>${escapeHtml(status)}</small>`:''}</div><b>Open</b></button>`;
+  const themeLabel = state.settings.theme === 'cottage' ? 'Cottagecore Garden' : state.settings.theme === 'dark' ? 'Dark' : state.settings.theme === 'classic' ? 'Classic' : 'Whimsical Compass';
+  document.getElementById('settings').innerHTML = `<div class="card settings-home"><div class="section-head"><h2>Settings</h2></div>
+    <div class="settings-topic-grid">
+      ${topic('appearance','Appearance & Theme','Choose Classic, Dark, Whimsical Compass, or Cottagecore Garden.','Current: '+themeLabel)}
+      ${topic('privacy','Privacy & Header','Control whether Available to Plan appears in the header.', state.settings.showAvailableHeader!==false?'Header balance: shown':'Header balance: hidden')}
+      ${topic('planning','Planning Rules','Choose what Compass includes in Funded Through and recommendations.')}
+      ${topic('calendar','Calendar Display','Control calendar color coding by record type, owner, or payment type.', 'Current: '+(state.settings.calendarColorMode||'recordType'))}
+      ${topic('household','Household','Manage household name, members, and reset options.')}
+      ${topic('backup','Backup & Import','Export everything or import a validated backup with preview.')}
+      ${topic('activity','Activity Log','Review recent changes made in Compass.')}
+      ${topic('ai','AI Connection','Local summaries now; secure AI proxy later.')}
+      ${topic('safety','Data Safety','View schema version, local storage, and import guardrails.')}
+    </div>
+  </div>`;
 }
 function checkSetting(key,label,checked){ return `<label class="check-label"><input type="checkbox" id="rule_${key}" ${checked?'checked':''} /> ${label}</label>`; }
-function savePlanningRules(){ ['critical','important','flexible','buckets','goals'].forEach(k=>state.settings.fundedRules[k]=document.getElementById(`rule_${k}`).checked); persist('Planning rules saved'); }
+function savePlanningRules(opts={}){ ['critical','important','flexible','buckets','goals'].forEach(k=>state.settings.fundedRules[k]=document.getElementById(`rule_${k}`).checked); if(opts.close) closeConfirm(); persist('Planning rules saved'); }
 function saveThemePrivacy(){ state.settings.theme=document.getElementById('themeSelect').value; state.settings.showAvailableHeader=document.getElementById('showAvailableHeader').checked; state.settings.themePromptSeen=true; persist('Theme & privacy saved'); }
+
+function settingsModal(title, body){
+  showInfoModal(title, body);
+  document.getElementById('confirmOk').classList.add('hidden');
+}
+function openSettingsTopic(topic){
+  const r = state.settings.fundedRules;
+  if(topic==='appearance') return settingsModal('Appearance & Theme', `<label>Theme<select id="themeSelect"><option value="whimsical" ${(state.settings.theme==='whimsical'||state.settings.theme==='cozy')?'selected':''}>Whimsical Compass</option><option value="cottage" ${state.settings.theme==='cottage'?'selected':''}>Cottagecore Garden</option><option value="classic" ${state.settings.theme==='classic'?'selected':''}>Classic</option><option value="dark" ${state.settings.theme==='dark'?'selected':''}>Dark</option></select></label><p class="muted">Cottagecore Garden adds playful adult-friendly garden animations, softer leaves, and a little more cozy energy while keeping finance labels clear.</p><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="saveThemePrivacyFromModal()">Save Appearance</button></div>`);
+  if(topic==='privacy') return settingsModal('Privacy & Header', `<label class="check-label"><input type="checkbox" id="showAvailableHeader" ${state.settings.showAvailableHeader!==false?'checked':''} /> Show Available to Plan in header</label><p class="muted">Available to Plan only includes accounts marked Include in Planning.</p><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="saveThemePrivacyFromModal()">Save Privacy</button></div>`);
+  if(topic==='planning') return settingsModal('Planning Rules', `<p class="muted">Configure what counts toward Funded Through and Projected Through.</p><div class="form-grid">${checkSetting('critical','Include Critical Bills',r.critical)}${checkSetting('important','Include Important Bills',r.important)}${checkSetting('flexible','Include Flexible Bills',r.flexible)}${checkSetting('buckets','Include Buckets',r.buckets)}${checkSetting('goals','Include Savings Goals',r.goals)}</div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="savePlanningRulesFromModal()">Save Planning Rules</button></div>`);
+  if(topic==='calendar') return settingsModal('Calendar Display', calendarDisplaySettingsBody() + `<div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="saveCalendarDisplaySettingsFromModal()">Save Calendar Display</button></div>`);
+  if(topic==='household') return settingsModal('Household', householdSettingsBody());
+  if(topic==='backup') return settingsModal('Backup & Import', `<p class="muted">Export everything. Imports are validated, migrated, and previewed before changing live data.</p><div class="button-row"><button class="btn primary" onclick="exportBackup()">Export Everything</button><label class="btn ghost">Choose Backup<input type="file" accept="application/json" class="hidden" onchange="previewImport(event)" /></label></div><div id="importPreview"></div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
+  if(topic==='activity') return settingsModal('Activity Log', (state.activityLog.slice(0,25).map(a=>recordRow({title:a.action, meta:`${new Date(a.at).toLocaleString()} · ${ownerName(a.memberId)} · ${escapeHtml(a.detail)}`})).join('') || '<p class="muted">No activity yet.</p>') + `<div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
+  if(topic==='ai') return settingsModal('AI Connection', `<p class="muted">Compass v6.4 uses local summaries and what-if estimates in the browser. A secure AI proxy can be connected later.</p><p class="field-help">Do not place OpenAI or other API keys directly in a public browser app.</p><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
+  if(topic==='safety') return settingsModal('Data Safety', `<div class="summary-list">${recordRow({title:'Schema Version', meta:'Current backup and migration version', amount:SCHEMA_VERSION})}${recordRow({title:'Storage Mode', meta:'This version stores data locally in your browser.', amount:'Local'})}${recordRow({title:'Import Guardrails', meta:'Size limits, schema migration, date validation, amount validation, and preview before commit.', amount:'On'})}${recordRow({title:'Scientific Notation', meta:'Rejected during money entry/import to prevent unsafe balances.', amount:'Blocked'})}</div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
+}
+function saveThemePrivacyFromModal(){
+  const themeSelect = document.getElementById('themeSelect');
+  if(themeSelect) state.settings.theme = themeSelect.value;
+  const showHeader = document.getElementById('showAvailableHeader');
+  if(showHeader) state.settings.showAvailableHeader = showHeader.checked;
+  state.settings.themePromptSeen = true;
+  closeConfirm(); persist('Settings saved');
+}
+function savePlanningRulesFromModal(){ savePlanningRules({close:true}); }
+function saveCalendarDisplaySettingsFromModal(){ saveCalendarDisplaySettings({close:true}); }
+function householdSettingsBody(){
+  const members = state.members.filter(m=>!m.system).map(m=>recordRow({title:m.name, meta:'Household member', actions:`<button class="btn danger" onclick="closeConfirm(); deleteMember('${m.id}')">Remove</button>`})).join('');
+  return `<label>Household Name<input id="householdName" maxlength="60" value="${escapeHtml(state.household.name)}" /></label><div class="button-row"><button class="btn primary" onclick="saveHouseholdNameFromModal()">Save Household</button></div><h3>Members</h3><div class="form-grid"><label>Add Member<input id="newMemberName" maxlength="40" placeholder="Member name" /></label><button class="btn primary" onclick="addMemberFromModal()">Add Member</button></div>${members || '<p class="muted">No household members yet.</p>'}<div class="card danger-zone"><h3>Delete Household</h3><p class="muted">This resets all Compass data. Export a backup first.</p><button class="btn danger" onclick="closeConfirm(); deleteHousehold()">Delete Household / Reset Data</button></div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`;
+}
+function saveHouseholdNameFromModal(){ saveHouseholdName(); }
+function addMemberFromModal(){ addMember(); }
+
 
 function colorSelect(id, current){
   return `<select id="${id}">${Object.keys(COLOR_OPTIONS).map(k=>`<option value="${k}" ${current===k?'selected':''}>${k[0].toUpperCase()+k.slice(1)}</option>`).join('')}</select>`;
 }
-function calendarDisplaySettingsCard(){
+function calendarDisplaySettingsBody(){
   const settings = state.settings.calendarColors || defaultState().settings.calendarColors;
   const ownerRows = state.members.map(m=>`<label>${escapeHtml(m.name)}${colorSelect(`ownerColor_${m.id}`, settings.owner?.[m.id] || (m.id===OWNER_HOUSEHOLD?'blue':'green'))}</label>`).join('');
-  return card('Calendar Display', `<p class="muted">Choose how calendar items are color-coded.</p><label>Color Code Calendar<select id="calendarColorMode"><option value="recordType" ${state.settings.calendarColorMode==='recordType'?'selected':''}>Record Type</option><option value="owner" ${state.settings.calendarColorMode==='owner'?'selected':''}>Owner</option><option value="paymentType" ${state.settings.calendarColorMode==='paymentType'?'selected':''}>Bill Pay Type</option><option value="none" ${state.settings.calendarColorMode==='none'?'selected':''}>None</option></select></label><h3>Record Type Colors</h3><div class="form-grid">${['bill','paycheck','bucket','goal','event'].map(k=>`<label>${TYPE_LABEL[k]||k}${colorSelect(`recordColor_${k}`, settings.recordType?.[k] || 'gray')}</label>`).join('')}</div><h3>Bill Pay Type Colors</h3><div class="form-grid">${PAYMENT_TYPES.map(k=>`<label>${PAYMENT_LABEL[k]}${colorSelect(`paymentColor_${k}`, settings.paymentType?.[k] || 'gray')}</label>`).join('')}</div><h3>Owner Colors</h3><div class="form-grid">${ownerRows}</div><button class="btn primary" onclick="saveCalendarDisplaySettings()">Save Calendar Display</button>`);
+  return `<p class="muted">Choose how calendar items are color-coded.</p><label>Color Code Calendar<select id="calendarColorMode"><option value="recordType" ${state.settings.calendarColorMode==='recordType'?'selected':''}>Record Type</option><option value="owner" ${state.settings.calendarColorMode==='owner'?'selected':''}>Owner</option><option value="paymentType" ${state.settings.calendarColorMode==='paymentType'?'selected':''}>Bill Pay Type</option><option value="none" ${state.settings.calendarColorMode==='none'?'selected':''}>None</option></select></label><h3>Record Type Colors</h3><div class="form-grid">${['bill','paycheck','bucket','goal','event'].map(k=>`<label>${TYPE_LABEL[k]||k}${colorSelect(`recordColor_${k}`, settings.recordType?.[k] || 'gray')}</label>`).join('')}</div><h3>Bill Pay Type Colors</h3><div class="form-grid">${PAYMENT_TYPES.map(k=>`<label>${PAYMENT_LABEL[k]}${colorSelect(`paymentColor_${k}`, settings.paymentType?.[k] || 'gray')}</label>`).join('')}</div><h3>Owner Colors</h3><div class="form-grid">${ownerRows}</div>`;
 }
-function saveCalendarDisplaySettings(){
+function calendarDisplaySettingsCard(){ return card('Calendar Display', calendarDisplaySettingsBody() + `<button class="btn primary" onclick="saveCalendarDisplaySettings()">Save Calendar Display</button>`); }
+function saveCalendarDisplaySettings(opts={}){
   state.settings.calendarColorMode = document.getElementById('calendarColorMode').value;
   state.settings.calendarColors = state.settings.calendarColors || defaultState().settings.calendarColors;
   state.settings.calendarColors.recordType = state.settings.calendarColors.recordType || {};
@@ -798,6 +833,7 @@ function saveCalendarDisplaySettings(){
   ['bill','paycheck','bucket','goal','event'].forEach(k=>state.settings.calendarColors.recordType[k]=document.getElementById(`recordColor_${k}`).value);
   PAYMENT_TYPES.forEach(k=>state.settings.calendarColors.paymentType[k]=document.getElementById(`paymentColor_${k}`).value);
   state.members.forEach(m=>state.settings.calendarColors.owner[m.id]=document.getElementById(`ownerColor_${m.id}`).value);
+  if(opts.close) closeConfirm();
   persist('Calendar display saved');
 }
 
@@ -939,6 +975,7 @@ function showInfoModal(title, body){
   document.getElementById('confirmTitle').textContent = title;
   document.getElementById('confirmBody').innerHTML = body;
   document.getElementById('confirmOk').className='btn primary';
+  document.getElementById('confirmOk').classList.remove('hidden');
   document.getElementById('confirmOk').textContent='Close';
   document.getElementById('confirmCancel').classList.add('hidden');
   document.getElementById('confirmOk').onclick=closeConfirm;
@@ -1055,7 +1092,7 @@ window.openRecord = openRecord; window.deleteRecord = deleteRecord; window.undoD
 window.navigate = navigate; window.moveMonth = moveMonth; window.showMonthlyOutlook = showMonthlyOutlook; window.openCalendarRecord = openCalendarRecord; window.showFundedDetails = showFundedDetails;
 window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding;
 window.runSimulator = runSimulator; window.setAssignSource = setAssignSource; window.refreshInsights = refreshInsights; window.saveThemePrivacy = saveThemePrivacy; window.explainAvailableToPlan = explainAvailableToPlan; window.dismissThemePrompt = dismissThemePrompt; window.openThemeSettingsFromPrompt = openThemeSettingsFromPrompt; window.convertSimulator = convertSimulator; window.continueConvertSimulator = continueConvertSimulator; window.runSimulatorAI = runSimulatorAI;
-window.savePlanningRules = savePlanningRules; window.saveCalendarDisplaySettings = saveCalendarDisplaySettings; window.saveHouseholdName = saveHouseholdName; window.addMember = addMember; window.deleteMember = deleteMember; window.deleteHousehold = deleteHousehold;
+window.savePlanningRules = savePlanningRules; window.saveCalendarDisplaySettings = saveCalendarDisplaySettings; window.openSettingsTopic = openSettingsTopic; window.saveThemePrivacyFromModal = saveThemePrivacyFromModal; window.savePlanningRulesFromModal = savePlanningRulesFromModal; window.saveCalendarDisplaySettingsFromModal = saveCalendarDisplaySettingsFromModal; window.saveHouseholdNameFromModal = saveHouseholdNameFromModal; window.addMemberFromModal = addMemberFromModal; window.saveHouseholdName = saveHouseholdName; window.addMember = addMember; window.deleteMember = deleteMember; window.deleteHousehold = deleteHousehold;
 window.exportBackup = exportBackup; window.previewImport = previewImport; window.commitImport = commitImport; window.closeDialog = closeDialog; window.closeConfirm = closeConfirm; window.persist = persist;
 setupEvents();
 render();

@@ -1,4 +1,4 @@
-# Compass v6.3
+# Compass v6.4
 
 Static GitHub Pages build for Compass, the household planning app focused on answering: "Am I okay until the next paycheck?"
 
@@ -44,3 +44,11 @@ Do not upload the enclosing folder unless your Pages repo is configured to serve
 ## Notes
 
 This version does not include Supabase, Plaid, real push notifications, or a backend AI proxy. Those remain future cloud/PWA releases.
+
+
+## v6.4 Update
+- Removed Dashboard and Settings page descriptors.
+- Redesigned Settings into topic cards with pop-up selection windows.
+- Added Cottagecore Garden theme option with gentle adult-friendly playful animations and garden footer details.
+- Adjusted mobile header so the menu trigger stays with the Compass name on the left while Available to Plan remains on the right.
+- Preserved v6.3 import validation, backup preview, migration, amount/date safeguards, and local data integrity rules.
