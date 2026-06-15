@@ -107,3 +107,42 @@ body{background:radial-gradient(circle at 12% 0%, rgba(191,135,56,.18), transpar
 .assign-sticky{position:sticky;top:88px;z-index:5}
 @media (orientation:landscape) and (max-width: 940px){.assign-sticky{top:78px}.assign-sticky .stats-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.assign-sticky .stat{padding:10px}}
 @media(max-width:760px){.hero-copy{max-width:62%}.dashboard-hero .hero-art{width:44%;opacity:.72;bottom:-8px}.dashboard-hero{min-height:250px}.assign-sticky{top:80px}}
+
+
+/* v6.5.3 asset-backed cottagecore theme */
+.asset-hero{position:relative;overflow:hidden;border-radius:28px;min-height:220px;padding:26px 24px;border:1px solid rgba(255,225,178,.22);background:linear-gradient(180deg,rgba(12,31,37,.92),rgba(8,22,26,.96));box-shadow:0 18px 40px rgba(0,0,0,.28)}
+.asset-hero > *{position:relative;z-index:2}
+.asset-hero::after{content:"";position:absolute;inset:0;background-size:cover;background-position:center right;opacity:.5;z-index:1;pointer-events:none}
+.asset-hero h2{font-size:2rem;margin-top:6px}
+.asset-hero p{max-width:52ch}
+.asset-hero .mini-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+[data-theme="cottage"] .asset-hero{color:#f9f0dc}
+[data-theme="cottage"] .asset-hero.accounts::after{background-image:url('assets/accounts.png')}
+[data-theme="cottage"] .asset-hero.bills::after{background-image:url('assets/bills.png')}
+[data-theme="cottage"] .asset-hero.paychecks::after{background-image:url('assets/paychecks.png')}
+[data-theme="cottage"] .asset-hero.buckets::after{background-image:url('assets/buckets.png')}
+[data-theme="cottage"] .asset-hero.goals::after{background-image:url('assets/savings_goals.png')}
+[data-theme="cottage"] .asset-hero.calendar::after{background-image:url('assets/calendar.png')}
+[data-theme="cottage"] .asset-hero.assign::after{background-image:url('assets/assign_money.png')}
+[data-theme="cottage"] .asset-hero.insights::after{background-image:url('assets/compass_insights.png')}
+[data-theme="cottage"] .asset-hero.history::after{background-image:url('assets/funding_history.png')}
+[data-theme="cottage"] .asset-hero.settings::after{background-image:url('assets/settings.png')}
+[data-theme="cottage"] .dashboard-hero{background-image:url('assets/full_tab_concept_board.png');background-size:cover;background-position:center right;border:1px solid rgba(255,225,178,.22);padding-right:42%;position:relative;overflow:hidden}
+[data-theme="cottage"] .dashboard-hero::before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(7,20,25,.92) 0%,rgba(10,24,28,.82) 38%,rgba(10,24,28,.18) 74%,rgba(10,24,28,.02) 100%)}
+[data-theme="cottage"] .dashboard-hero > *{position:relative;z-index:2}
+[data-theme="cottage"] .dash-card{background-size:cover;background-position:center right}
+[data-theme="cottage"] .dash-card.projected{background-image:linear-gradient(90deg,rgba(8,24,27,.92),rgba(8,24,27,.4)),url('assets/savings_goals.png')}
+[data-theme="cottage"] .dash-card.balance{background-image:linear-gradient(90deg,rgba(8,24,27,.92),rgba(8,24,27,.4)),url('assets/buckets.png')}
+[data-theme="cottage"] .dash-card.paycheck{background-image:linear-gradient(90deg,rgba(8,24,27,.92),rgba(8,24,27,.4)),url('assets/paychecks.png')}
+[data-theme="cottage"] .dash-card.wealth{background-image:linear-gradient(90deg,rgba(8,24,27,.92),rgba(8,24,27,.4)),url('assets/compass_insights.png')}
+@media(max-width:760px){[data-theme="cottage"] .dashboard-hero{padding-right:24px;padding-bottom:160px;background-position:center bottom}.asset-hero{padding-bottom:150px}.asset-hero::after{background-position:center bottom;opacity:.42}}
+
+/* v6.5.3 Assign Money sticky bug fix */
+.assign-card{overflow:visible!important}
+.assign-card .assign-sticky{position:sticky;top:96px;z-index:9;margin:14px 0 16px;background:linear-gradient(180deg,var(--card),var(--card2));box-shadow:0 14px 30px rgba(0,0,0,.18);border:2px solid var(--accent);padding:12px 14px}
+.assign-card .assign-sticky .kicker{margin:0 0 4px}
+.assign-card .assign-total{font-size:clamp(24px,6vw,38px);line-height:1;font-weight:950}
+@media(max-width:760px){.assign-card .assign-sticky{top:82px;border-radius:18px;padding:10px 12px}.assign-card .assign-total{font-size:28px}}
+@media(max-width:940px) and (orientation:landscape){.assign-card .assign-sticky{top:72px;display:flex;align-items:center;justify-content:space-between;gap:12px}.assign-card .assign-sticky .kicker{margin:0;font-size:11px}.assign-card .assign-total{font-size:24px}}
+[data-theme="cottage"] .assign-card .assign-sticky{background:linear-gradient(180deg,#6c4c2c,#4b331f);border-color:#b99757;color:#fff2d8}
+[data-theme="cottage"] .assign-card .assign-sticky .kicker{color:#ffdca9}
