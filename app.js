@@ -1,11 +1,11 @@
-/* Compass v6.5.2.2 - UI enhancements, sticky assign summary, and refined storybook garden theme */
+/* Compass v6.5.2.3 - Assign Money reservation logic and paid bill hotfix */
 const STORAGE_KEY = 'compass_v6_state';
 const HAD_EXISTING_STATE = !!localStorage.getItem(STORAGE_KEY);
-const SCHEMA_VERSION = '6.4.0';
+const SCHEMA_VERSION = '6.5.2.3';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const LIMITS = {
   name: 60, title: 75, notes: 500, householdName: 60, memberName: 40,
-  amount: 9999999.99, recordCounts: { accounts: 100, bills: 1000, buckets: 1000, goals: 1000, events: 5000, paychecks: 500, members: 100, fundingSessions: 5000, allocations: 25000 }
+  amount: 9999999.99, recordCounts: { accounts: 100, bills: 1000, buckets: 1000, goals: 1000, events: 5000, paychecks: 500, members: 100, fundingSessions: 5000, fundingAllocations: 25000, billPayments: 10000, allocations: 25000 }
 };
 const MONEY_RE = /^-?\d{1,7}(\.\d{0,2})?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -60,7 +60,7 @@ function daysBetween(a,b){ return Math.ceil((parseDate(b)-parseDate(a))/(1000*60
 function isRealDate(value){ if (!DATE_RE.test(value || '')) return false; const d = parseDate(value); return !Number.isNaN(d) && iso(d) === value; }
 function parseMoney(value){
   const raw = String(value ?? '').trim();
-  if (!MONEY_RE.test(raw)) return { ok:false, value:0, error:'Enter a normal dollar amount under 9,999,999.99. Scientific notation is not allowed.' };
+  if (!MONEY_RE.test(raw)) return { ok:false, value:0, error:'Enter a normal dollar amount under 9,999,999.99.' };
   const n = Number(raw);
   if (!Number.isFinite(n) || Math.abs(n) > LIMITS.amount) return { ok:false, value:0, error:'Amount is outside the supported range.' };
   return { ok:true, value:Math.round(n*100)/100 };
@@ -92,6 +92,7 @@ function defaultState(){
     paychecks: [],
     fundingSessions: [],
     fundingAllocations: [],
+    billPayments: [],
     activityLog: []
   };
 }
@@ -129,14 +130,18 @@ function logActivity(action, detail, meta={}){
 }
 function ownerName(id){ return state.members.find(m=>m.id===id)?.name || 'Household'; }
 function planningBalance(extraState=state){ return extraState.accounts.filter(a=>!a.deleted && a.includeInPlanning).reduce((sum,a)=>sum + Number(a.balance || 0), 0); }
+function activeFundingAllocations(extraState=state){ return arr(extraState.fundingAllocations).filter(a => (a.status || 'historical') === 'active'); }
+function activeAssignedTotal(extraState=state){ return activeFundingAllocations(extraState).reduce((sum,a)=>sum + Number(a.amount || 0), 0); }
+function unassignedBalance(extraState=state){ return planningBalance(extraState) - activeAssignedTotal(extraState); }
+function planningBreakdown(extraState=state){ const included = planningBalance(extraState); const assigned = activeAssignedTotal(extraState); return { included, assigned, unassigned: included - assigned }; }
 function accountType(v){ const raw=String(v||'').toLowerCase().trim(); const aliases={saving:'savings',retirement:'401k','401(k)':'401k','401k-retirement':'401k','credit card':'credit-card',credit:'credit-card',loan:'loan-debt',debt:'loan-debt',asset:'other-asset'}; const key=aliases[raw] || raw; return ACCOUNT_TYPES.includes(key) ? key : 'checking'; }
 function isDebtAccount(a){ return DEBT_TYPES.includes(accountType(a.type)); }
 function assetsTotal(){ return state.accounts.filter(a=>!a.deleted && ASSET_TYPES.includes(accountType(a.type))).reduce((sum,a)=>sum+Number(a.balance||0),0); }
 function debtsTotal(){ return state.accounts.filter(a=>!a.deleted && isDebtAccount(a)).reduce((sum,a)=>sum+Math.abs(Number(a.balance||0)),0); }
 function netPosition(){ return assetsTotal() - debtsTotal(); }
 function pageIntro(id){ const text = PAGE_DESCRIPTIONS[id] || ''; return text ? `<p class="page-purpose">${escapeHtml(text)}</p>` : ''; }
-function updateHeaderBalance(){ const el=document.getElementById('availablePill'); if(!el)return; const show=state.settings.showAvailableHeader!==false; el.innerHTML = `<span>Available to Plan</span><strong>${show ? fmtMoney(planningBalance()) : '••••'}</strong>`; el.title='Available to Plan is the total balance of accounts marked Include in Planning.'; }
-function explainAvailableToPlan(){ showInfoModal('Available to Plan', '<p>Available to Plan is the total balance of accounts marked <strong>Include in Planning</strong>. It does not include expected paychecks or accounts excluded from planning.</p>'); }
+function updateHeaderBalance(){ const el=document.getElementById('availablePill'); if(!el)return; const show=state.settings.showAvailableHeader!==false; const b=planningBreakdown(); el.innerHTML = `<span>Still Unassigned</span><strong>${show ? fmtMoney(b.unassigned) : '••••'}</strong>`; el.title='Still Unassigned is your included planning balance minus active assigned/reserved money.'; }
+function explainAvailableToPlan(){ const b=planningBreakdown(); showInfoModal('Still Unassigned', `<p><strong>Assign Money now reserves dollars inside Compass.</strong></p><div class="summary-list">${recordRow({title:'Included in Planning', meta:'Balances from accounts marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Already Assigned', meta:'Active funding sessions still reserving money', amount:'-'+fmtMoney(b.assigned)})}${recordRow({title:'Still Unassigned', meta:'Money that is still free to plan with', amount:fmtMoney(b.unassigned)})}</div><p class="muted">Compass does not change bank balances unless you explicitly choose to update an account during a paid bill flow.</p>`); }
 function bucketFrequency(v){ return BUCKET_FREQUENCIES.includes(String(v||'').toLowerCase()) ? String(v||'').toLowerCase() : 'weekly'; }
 function weeksInMonth(date=new Date()){ const y=date.getFullYear(), m=date.getMonth(); return Math.round(new Date(y,m+1,0).getDate()/7); }
 function bucketMonthlyAmount(bucket, monthDate=calendarCursor){ const amount=Number(bucket.targetAmount||0); const freq=bucketFrequency(bucket.frequency); if(freq==='monthly') return amount; if(freq==='paycheck') return amount * Math.max(1, expandRecurring(state.paychecks, iso(new Date(monthDate.getFullYear(),monthDate.getMonth(),1)), iso(new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0)), 'nextPayday').length); return amount * weeksInMonth(monthDate); }
@@ -165,10 +170,22 @@ function nextPaycheckAfter(dateIso, fallbackDays=14){
   const pays = upcomingPaychecks(180, dateIso).filter(p=>p.occurrenceDate > dateIso);
   return pays[0]?.occurrenceDate || iso(addDays(parseDate(dateIso), fallbackDays));
 }
-function fundedAmount(targetType, targetId, occurrenceDate=''){
-  return state.fundingAllocations
+function activeAssignedAmount(targetType, targetId, occurrenceDate=''){
+  return activeFundingAllocations()
     .filter(a => a.targetType === targetType && a.targetId === targetId && (a.occurrenceDate || '') === (occurrenceDate || ''))
     .reduce((sum,a)=>sum+Number(a.amount||0),0);
+}
+function fundedAmount(targetType, targetId, occurrenceDate=''){
+  return activeAssignedAmount(targetType, targetId, occurrenceDate);
+}
+function paidAmount(targetType, targetId, occurrenceDate=''){
+  if (targetType !== 'bill') return 0;
+  return arr(state.billPayments)
+    .filter(p => (p.status || 'active') === 'active' && p.billId === targetId && (p.occurrenceDate || '') === (occurrenceDate || ''))
+    .reduce((sum,p)=>sum+Number(p.amount||0),0);
+}
+function billPaymentFor(billId, occurrenceDate=''){
+  return arr(state.billPayments).filter(p => (p.status || 'active') === 'active' && p.billId === billId && (p.occurrenceDate || '') === (occurrenceDate || '')).sort((a,b)=>(b.paidDate||'').localeCompare(a.paidDate||''));
 }
 function targetAmountFor(type, item){
   if (type === 'bill') return Number(item.amount || 0);
@@ -178,9 +195,15 @@ function targetAmountFor(type, item){
 }
 function itemFundingStatus(type, item, occurrenceDate=''){
   const target = targetAmountFor(type, item);
-  const funded = fundedAmount(type, item.id, occurrenceDate);
-  const pct = target > 0 ? clamp((funded/target)*100,0,100) : 0;
-  return { target, funded, remaining: Math.max(0, target-funded), pct, status: funded >= target && target > 0 ? 'funded' : funded > 0 ? 'partial' : 'planned' };
+  const paid = paidAmount(type, item.id, occurrenceDate);
+  const unpaidTarget = Math.max(0, target - paid);
+  const rawFunded = activeAssignedAmount(type, item.id, occurrenceDate);
+  const funded = type === 'bill' ? Math.min(rawFunded, unpaidTarget) : rawFunded;
+  const remaining = Math.max(0, unpaidTarget - funded);
+  const covered = Math.min(target, paid + funded);
+  const pct = target > 0 ? clamp((covered/target)*100,0,100) : 0;
+  const status = type === 'bill' && paid >= target && target > 0 ? 'paid' : funded >= unpaidTarget && unpaidTarget > 0 ? 'funded' : (funded > 0 || paid > 0) ? 'partial' : 'unfunded';
+  return { target, paid, funded, rawFunded, unpaidTarget, remaining, pct, status };
 }
 function recurringLabel(v){ return ({'one-time':'One-time',weekly:'Weekly',biweekly:'Biweekly',monthly:'Monthly'})[v] || 'One-time'; }
 function priorityRankForTarget(t){
@@ -207,7 +230,7 @@ function paycheckAlreadyInBalance(paycheckOccurrence){
   return base.balanceUpdatedOnReceive === true && (!base.receivedOccurrenceDate || base.receivedOccurrenceDate === (paycheckOccurrence?.occurrenceDate || paycheckOccurrence?.nextPayday || ''));
 }
 function assignPoolForPaycheck(paycheckOccurrence){
-  const base = planningBalance();
+  const base = unassignedBalance();
   const addPaycheck = paycheckOccurrence && !paycheckAlreadyInBalance(paycheckOccurrence);
   return { total:base + (addPaycheck ? Number(paycheckOccurrence.amount||0) : 0), base, paycheckAmount:Number(paycheckOccurrence?.amount||0), addPaycheck, mode:addPaycheck?'balancePlusPaycheck':'updatedBalanceOnly' };
 }
@@ -241,7 +264,7 @@ function buildTimeline({ includeExpectedIncome=false, extraSpend=0, days=120 }={
 }
 function calculateFundedThrough(opts={}){
   const days = Number(state.settings.lookAheadDays || 120);
-  let balance = planningBalance() - Number(opts.extraSpend || 0);
+  let balance = unassignedBalance() - Number(opts.extraSpend || 0);
   let lastGood = todayISO();
   let nextUnfunded = null;
   const events = buildTimeline({ includeExpectedIncome:!!opts.includeExpectedIncome, extraSpend:0, days });
@@ -268,11 +291,11 @@ function advisorTargets(){
   return targets.sort((a,b)=> priorityRankForTarget(a)-priorityRankForTarget(b) || (a.dueDate||a.occurrenceDate).localeCompare(b.dueDate||b.occurrenceDate));
 }
 function advisorSummary(){
-  const cash = planningBalance();
+  const cash = unassignedBalance();
   const next = nextPaycheck();
   const targets = advisorTargets().slice(0,8);
   let remainingCash = cash;
-  const lines = [`Available Planning Cash: ${fmtMoney(cash)}`, next ? `Next Paycheck: ${next.name} · ${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : 'Next Paycheck: none entered', '', 'Recommended Allocation Order:'];
+  const lines = [`Still Unassigned: ${fmtMoney(cash)}`, next ? `Next Paycheck: ${next.name} · ${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : 'Next Paycheck: none entered', '', 'Recommended Allocation Order:'];
   if (!targets.length) {
     lines.push('No upcoming bills, buckets, or savings contributions need funding before the next paycheck.');
   } else {
@@ -286,7 +309,7 @@ function advisorSummary(){
   return lines.join('\n');
 }
 function advisorCardsHTML(){
-  const cash = planningBalance();
+  const cash = unassignedBalance();
   const next = nextPaycheck();
   const targets = advisorTargets().slice(0,8);
   let remainingCash = cash;
@@ -297,14 +320,14 @@ function advisorCardsHTML(){
     const payment = isBill ? `<span><b>Payment Type:</b> ${PAYMENT_LABEL[normalizePaymentType(t.paymentType)]}</span>` : '';
     return `<div class="advisor-action"><div class="advisor-rank">${idx+1}</div><div class="advisor-body"><h3>${escapeHtml(t.name)}</h3><div class="advisor-grid"><span><b>Type:</b> ${isBill ? `${PRIORITY_LABEL[t.priority] || 'Flexible'} Bill` : TYPE_LABEL[t.type] || t.type}</span>${t.dueDate?`<span><b>Due:</b> ${formatDate(t.dueDate)}</span>`:''}${payment}<span><b>Remaining:</b> ${fmtMoney(t.remaining)}</span><span><b>Suggested:</b> ${fmtMoney(suggested)}</span></div></div></div>`;
   }).join('');
-  return `<div class="advisor-summary-grid">${softBox('Available Planning Cash', `<strong class="big-money">${fmtMoney(cash)}</strong>`, 'Money in accounts marked Include in Planning')}${softBox('Next Paycheck', next ? `<strong>${escapeHtml(next.name)}</strong><br>${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : '<span class="muted">No paycheck entered</span>', 'Expected income context')}</div><h3>Recommended Allocation Order</h3>${actionCards || '<p class="muted">No upcoming bills, buckets, or savings contributions need funding before the next paycheck.</p>'}`;
+  return `<div class="advisor-summary-grid">${softBox('Still Unassigned', `<strong class="big-money">${fmtMoney(cash)}</strong>`, 'Included account money not already assigned')}${softBox('Next Paycheck', next ? `<strong>${escapeHtml(next.name)}</strong><br>${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : '<span class="muted">No paycheck entered</span>', 'Expected income context')}</div><h3>Recommended Allocation Order</h3>${actionCards || '<p class="muted">No upcoming bills, buckets, or savings contributions need funding before the next paycheck.</p>'}`;
 }
 function insightSummary(mode='advisor'){
   const funded = calculateFundedThrough({includeExpectedIncome:false});
   const projected = calculateFundedThrough({includeExpectedIncome:true});
   const next = nextPaycheck();
   if (mode === 'analyst') {
-    return `Funded Through is ${formatDate(funded.throughDate)} using current planning balances only. Projected Through is ${formatDate(projected.throughDate)} when expected income is included. Planning balance is ${fmtMoney(planningBalance())}. ${next ? `Next paycheck is ${next.name} on ${formatDate(next.occurrenceDate)} for ${fmtMoney(next.amount)}.` : 'No upcoming paycheck is entered.'}`;
+    return `Funded Through is ${formatDate(funded.throughDate)} using current planning balances only. Projected Through is ${formatDate(projected.throughDate)} when expected income is included. Still Unassigned is ${fmtMoney(unassignedBalance())}. ${next ? `Next paycheck is ${next.name} on ${formatDate(next.occurrenceDate)} for ${fmtMoney(next.amount)}.` : 'No upcoming paycheck is entered.'}`;
   }
   if (mode === 'simulator') {
     return `Ask a what-if question in plain English. Examples: “What happens if I put $100 into savings?” or “What if we finance a new vehicle for $650/month?” Compass will compare your current Funded Through and Projected Through dates against the scenario.`;
@@ -328,7 +351,7 @@ function scenarioKind(text){
 }
 function calculateFundedThroughWithMonthly({ includeExpectedIncome=false, extraSpend=0, monthlyExpense=0, extraIncome=0 }={}){
   const days = Number(state.settings.lookAheadDays || 120);
-  let balance = planningBalance() - Number(extraSpend || 0) + Number(extraIncome || 0);
+  let balance = unassignedBalance() - Number(extraSpend || 0) + Number(extraIncome || 0);
   let lastGood = todayISO();
   let nextUnfunded = null;
   const events = buildTimeline({ includeExpectedIncome:!!includeExpectedIncome, extraSpend:0, days });
@@ -407,6 +430,7 @@ function renderDashboard(){
   const flow = recentSession ? fundingMap(recentSession) : '';
   const hasCoreData = planningBalance() > 0 || state.bills.some(b=>!b.deleted) || state.paychecks.some(p=>!p.deleted);
   const upcoming = dashboardUpcomingItems();
+  const moneyTruth = planningBreakdown();
   document.getElementById('dashboard').innerHTML = `
     <section class="dashboard-shell">
       <div class="dashboard-hero ${hasCoreData ? '' : 'empty'}" role="button" onclick="showFundedDetails(false)">
@@ -426,9 +450,9 @@ function renderDashboard(){
           <small>Includes expected income</small>
         </button>
         <button class="dash-card balance" onclick="navigate('accounts')">
-          <span>Available to Plan</span>
-          <strong>${fmtMoney(planningBalance())}</strong>
-          <small>${planningAccountCount()} account${planningAccountCount()===1?'':'s'} included</small>
+          <span>Still Unassigned</span>
+          <strong>${fmtMoney(moneyTruth.unassigned)}</strong>
+          <small>${fmtMoney(moneyTruth.included)} included - ${fmtMoney(moneyTruth.assigned)} assigned</small>
         </button>
         <button class="dash-card paycheck" onclick="navigate('paychecks')">
           <span>Next Paycheck</span>
@@ -439,7 +463,7 @@ function renderDashboard(){
 
       <div class="dashboard-grid mini-dashboard-grid">
         <button class="dash-card wealth" onclick="navigate('accounts')"><span>360 Wealth View</span><strong>${fmtMoney(netPosition())}</strong><small>Assets minus debts</small></button>
-        <button class="dash-card reminders" onclick="navigate('calendar')"><span>Due Soon</span><strong>${reminderItems(7).length}</strong><small>Unfunded bills due in 7 days</small></button>
+        <button class="dash-card reminders" onclick="explainAvailableToPlan()"><span>Already Assigned</span><strong>${fmtMoney(moneyTruth.assigned)}</strong><small>Reserved by active funding sessions</small></button>
         <button class="dash-card privacy" onclick="navigate('settings')"><span>Header Balance</span><strong>${state.settings.showAvailableHeader!==false?'Shown':'Hidden'}</strong><small>Privacy setting</small></button>
       </div>
 
@@ -516,7 +540,7 @@ function renderAccounts(){
     actions:actionButtons('account',a.id)
   })).join('');
   const wealth = `<div class="wealth-grid">
-    ${softBox('Available to Plan', `<strong>${fmtMoney(planningBalance())}</strong>`, 'Included planning accounts')}
+    ${softBox('Included in Planning', `<strong>${fmtMoney(planningBalance())}</strong>`, 'Balances from included accounts')}${softBox('Still Unassigned', `<strong>${fmtMoney(unassignedBalance())}</strong>`, 'Included balance minus active assignments')}
     ${softBox('Other Assets', `<strong>${fmtMoney(Math.max(0, assetsTotal()-planningBalance()))}</strong>`, 'Excluded assets and long-term accounts')}
     ${softBox('Debts', `<strong>-${fmtMoney(debtsTotal())}</strong>`, 'Credit card and loan/debt accounts')}
     ${softBox('Estimated Net Position', `<strong>${fmtMoney(netPosition())}</strong>`, 'Assets minus debts')}
@@ -524,12 +548,19 @@ function renderAccounts(){
   document.getElementById('accounts').innerHTML = card('Accounts', `<div class="button-row"><button class="btn primary" onclick="openRecord('account')">Add Account</button></div><h3>360 Wealth View</h3>${wealth}${rows || emptyState('Your path begins here. Add your first account to start planning.', `<button class="btn primary" onclick="openRecord('account')">Add Account</button>`)}`, '', 'accounts');
 }
 function renderBills(){
-  const rows = state.bills.filter(b=>!b.deleted).sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).map(b=>{
+  const activeBills = state.bills.filter(b=>!b.deleted).sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+  const rows = activeBills.map(b=>{
     const occurrenceDate = nextOccurrenceDate(b.dueDate, b.recurrence);
     const st = itemFundingStatus('bill', b, occurrenceDate);
-    return recordRow({ title:b.name, meta:`${PRIORITY_LABEL[b.priority]} · ${b.kind === 'fixed'?'Fixed':'Non-fixed'} · Payment Type: ${PAYMENT_LABEL[normalizePaymentType(b.paymentType)]} · Due ${formatDate(b.dueDate)} · ${recurringLabel(b.recurrence)} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.amount), chips:`<span class="chip ${st.status==='funded'?'good':st.status==='partial'?'warn':''}">${st.status}</span>`, actions:`<button class="btn ghost" onclick="gotoFunding('bill','${b.id}','${occurrenceDate}')">History</button>${actionButtons('bill',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded`} });
+    const paid = billPaymentFor(b.id, occurrenceDate);
+    const statusClass = st.status==='paid' || st.status==='funded' ? 'good' : st.status==='partial' ? 'warn' : '';
+    const paymentMeta = paid.length ? ` · Paid ${fmtMoney(paid.reduce((s,p)=>s+Number(p.amount||0),0))}` : '';
+    const paidActions = paid.map(p=>`<button class="btn ghost" onclick="undoBillPayment('${p.id}')">Undo Paid</button>`).join('');
+    const markPaid = st.status !== 'paid' ? `<button class="btn good" onclick="openMarkBillPaid('${b.id}','${occurrenceDate}')">Mark Paid</button>` : '';
+    return recordRow({ title:b.name, meta:`${PRIORITY_LABEL[b.priority]} · ${b.kind === 'fixed'?'Fixed':'Non-fixed'} · Payment Type: ${PAYMENT_LABEL[normalizePaymentType(b.paymentType)]} · Due ${formatDate(occurrenceDate)} · ${recurringLabel(b.recurrence)} · Owner: ${ownerName(b.ownerId)}${paymentMeta}`, amount:fmtMoney(b.amount), chips:`<span class="chip ${statusClass}">${st.status}</span>`, actions:`${markPaid}${paidActions}<button class="btn ghost" onclick="gotoFunding('bill','${b.id}','${occurrenceDate}')">History</button>${actionButtons('bill',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} assigned · ${fmtMoney(st.paid)} paid · ${fmtMoney(st.remaining)} still needs funding`} });
   }).join('');
-  document.getElementById('bills').innerHTML = card('Bills', `<div class="button-row"><button class="btn primary" onclick="openRecord('bill')">Add Bill</button></div>${rows || emptyState('No bills mapped yet. Add upcoming obligations so Compass can guide your route.')}`, '', 'bills');
+  const paidHistory = arr(state.billPayments).filter(p=>(p.status||'active')==='active').slice(0,8).map(p=>recordRow({title:p.billName||'Paid bill', meta:`Paid ${formatDate(p.paidDate)} · ${p.accountName ? 'from '+escapeHtml(p.accountName) : 'account not tracked'} · occurrence ${formatDate(p.occurrenceDate)}`, amount:fmtMoney(p.amount), actions:`<button class="btn ghost" onclick="undoBillPayment('${p.id}')">Undo Paid</button>`})).join('');
+  document.getElementById('bills').innerHTML = card('Bills', `<div class="button-row"><button class="btn primary" onclick="openRecord('bill')">Add Bill</button></div>${rows || emptyState('No bills mapped yet. Add upcoming obligations so Compass can guide your route.')}<h3>Paid History</h3>${paidHistory || '<p class="muted">No paid bills recorded yet.</p>'}`, '', 'bills');
 }
 function nextOccurrenceDate(firstDate, rec){
   if (!isRealDate(firstDate)) return todayISO();
@@ -638,8 +669,8 @@ function assignTargetsForSource(selected){
   return assignTargetsForPaycheck(selected || { id:'balance-source', occurrenceDate:todayISO(), amount:0 });
 }
 function assignPoolForSource(selected){
-  if ((state.settings.assignSourceMode || 'balance') === 'balance') return { total:planningBalance(), base:planningBalance(), paycheckAmount:0, addPaycheck:false, mode:'availableToPlan' };
-  return selected ? assignPoolForPaycheck(selected) : { total:planningBalance(), base:planningBalance(), paycheckAmount:0, addPaycheck:false, mode:'availableToPlan' };
+  if ((state.settings.assignSourceMode || 'balance') === 'balance') return { total:unassignedBalance(), base:unassignedBalance(), paycheckAmount:0, addPaycheck:false, mode:'unassignedBalance' };
+  return selected ? assignPoolForPaycheck(selected) : { total:unassignedBalance(), base:unassignedBalance(), paycheckAmount:0, addPaycheck:false, mode:'unassignedBalance' };
 }
 function renderAssign(){
   const paychecks = upcomingPaychecks(90);
@@ -648,13 +679,13 @@ function renderAssign(){
   if (sourceMode === 'paycheck' && selected && selectedAssignPaycheckId !== assignKey(selected)) selectedAssignPaycheckId = assignKey(selected);
   const targets = assignTargetsForSource(sourceMode === 'paycheck' ? selected : null);
   const pool = assignPoolForSource(sourceMode === 'paycheck' ? selected : null);
-  const sourceSelector = `<div class="funding-source"><label><input type="radio" name="assignSource" value="balance" ${sourceMode==='balance'?'checked':''} onchange="setAssignSource('balance')" /> <strong>Available to Plan</strong><span>Use money already in accounts marked Include in Planning.</span></label><label><input type="radio" name="assignSource" value="paycheck" ${sourceMode==='paycheck'?'checked':''} onchange="setAssignSource('paycheck')" /> <strong>Paycheck</strong><span>Use a specific paycheck to fund upcoming items.</span></label></div>`;
+  const sourceSelector = `<div class="funding-source"><label><input type="radio" name="assignSource" value="balance" ${sourceMode==='balance'?'checked':''} onchange="setAssignSource('balance')" /> <strong>Still Unassigned</strong><span>Use included account money that has not already been assigned.</span></label><label><input type="radio" name="assignSource" value="paycheck" ${sourceMode==='paycheck'?'checked':''} onchange="setAssignSource('paycheck')" /> <strong>Paycheck</strong><span>Use a specific paycheck to fund upcoming items.</span></label></div>`;
   const paycheckSelect = sourceMode === 'paycheck' ? `<div class="form-grid"><label>Selected Paycheck<select id="assignPaycheck" onchange="selectedAssignPaycheckId=this.value; renderAssign()">${paychecks.map(p=>`<option value="${assignKey(p)}" ${assignKey(p)===selectedAssignPaycheckId?'selected':''}>${escapeHtml(p.name)} · ${formatDate(p.occurrenceDate)} · ${fmtMoney(p.amount)}</option>`).join('')}</select></label></div>` : '';
-  const help = sourceMode === 'balance' ? 'Using Available to Plan only. No paycheck is required.' : (pool.addPaycheck ? `Available to Plan ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`);
+  const help = sourceMode === 'balance' ? 'Using Still Unassigned only. No paycheck is required.' : (pool.addPaycheck ? `Available to Plan ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`);
   document.getElementById('assign').innerHTML = card('Assign Money', `
     ${sourceSelector}${paycheckSelect}
     <p class="muted">Suggested plan sorted by Critical Bills → Important Bills → Buckets → Flexible Bills → Savings Goals. Check items and adjust amounts; remaining funds update immediately.</p>
-    <div class="assign-sticky"><div class="kicker">Available to Assign</div><div class="assign-total" id="assignRemaining">${fmtMoney(pool.total)}</div><div class="field-help">${escapeHtml(help)}</div></div>
+    <div class="assign-sticky"><div class="kicker">Available to Assign</div><div class="assign-total" id="assignRemaining">${fmtMoney(pool.total)}</div></div>
     <div id="allocationRows">${targets.map((t,i)=>allocationHTML(t,i)).join('') || '<p class="muted">No recommended items to fund before the next paycheck.</p>'}</div>
     <div class="button-row"><button class="btn primary" onclick="saveFundingSession()">Save Funding Session</button></div>`, '', 'assign');
   setTimeout(updateAssignRemaining,0);
@@ -687,14 +718,16 @@ function saveFundingSession(){
     if (!row.querySelector('.assign-check')?.checked) continue;
     const parsed = parseMoney(row.querySelector('.assign-amount')?.value || '0');
     if (!parsed.ok || parsed.value <= 0) return toast('Fix allocation amounts before saving.');
+    const maxRemaining = Number(row.dataset.amount || 0);
+    if (parsed.value > maxRemaining + 0.005) return toast('Do not assign more than the remaining need.');
     allocations.push({ targetType:row.dataset.type, targetId:row.dataset.id, occurrenceDate:row.dataset.date, targetName:row.dataset.name, amount:parsed.value });
   }
   if (!allocations.length) return toast('Select at least one item to fund.');
   const sessionId = uid();
   const pool = assignPoolForSource(sourceMode === 'paycheck' ? selected : null);
-  const session = { id:sessionId, at:new Date().toISOString(), memberId:OWNER_HOUSEHOLD, paycheckId:sourceMode === 'paycheck' ? selected.id : '', paycheckName:sourceMode === 'paycheck' ? selected.name : 'Available to Plan', paycheckAmount:sourceMode === 'paycheck' ? Number(selected.amount||0) : 0, planningBalance:planningBalance(), poolMode:pool.mode, fundingSource:sourceMode, paycheckIncludedInBalance:sourceMode === 'paycheck' ? !pool.addPaycheck : true, allocations:allocations.map(a=>({...a})) };
+  const session = { id:sessionId, status:'active', at:new Date().toISOString(), memberId:OWNER_HOUSEHOLD, paycheckId:sourceMode === 'paycheck' ? selected.id : '', paycheckName:sourceMode === 'paycheck' ? selected.name : 'Available to Plan', paycheckAmount:sourceMode === 'paycheck' ? Number(selected.amount||0) : 0, planningBalance:planningBalance(), poolMode:pool.mode, fundingSource:sourceMode, paycheckIncludedInBalance:sourceMode === 'paycheck' ? !pool.addPaycheck : true, allocations:allocations.map(a=>({...a})) };
   state.fundingSessions.unshift(session);
-  allocations.forEach(a=>state.fundingAllocations.push({ id:uid(), sessionId, at:session.at, ...a }));
+  allocations.forEach(a=>state.fundingAllocations.push({ id:uid(), sessionId, status:'active', at:session.at, ...a }));
   logActivity('Funding session saved', `${session.paycheckName} funded ${allocations.length} items`, { sessionId });
   persist('Funding session saved');
   navigate('fundingHistory');
@@ -707,12 +740,22 @@ function fundingMap(session){
 }
 function renderFundingHistory(filter=null){
   const sessions = state.fundingSessions;
-  const body = sessions.map(s=>card(`${escapeHtml(s.paycheckName)} · ${new Date(s.at).toLocaleString()}`, `
-    <p class="muted">Planning balance: ${fmtMoney(s.planningBalance)} · Paycheck: ${fmtMoney(s.paycheckAmount)}</p>
-    <div class="flow-map">${escapeHtml(fundingMap(s))}</div>
-    ${s.allocations.map(a=>recordRow({title:a.targetName, meta:`${TYPE_LABEL[a.targetType] || a.targetType} · ${a.occurrenceDate ? formatDate(a.occurrenceDate) : 'No date'}`, amount:fmtMoney(a.amount)})).join('')}
-  `)).join('');
-  document.getElementById('fundingHistory').innerHTML = card('Funding History', `${body || '<p class="muted">Nothing funded yet. Once money is assigned, your funding trail will appear here.</p>'}`, '', 'fundingHistory');
+  const statusLabel = s => ({active:'Active reservation', reversed:'Reversed', 'closed-paid':'Closed by payment', historical:'History only'})[s.status || 'historical'] || 'History only';
+  const body = sessions.map(s=>{
+    const status = s.status || 'historical';
+    const related = state.fundingAllocations.filter(a=>a.sessionId===s.id);
+    const activeTotal = related.filter(a=>(a.status||'historical')==='active').reduce((sum,a)=>sum+Number(a.amount||0),0);
+    const actions = status==='active' ? `<div class="button-row"><button class="btn danger" onclick="reverseFundingSession('${s.id}')">Reverse Session</button></div>` : '';
+    return card(`${escapeHtml(s.paycheckName)} · ${new Date(s.at).toLocaleString()}`, `
+      <p><span class="chip ${status==='active'?'good':status==='reversed'?'danger':''}">${statusLabel(s)}</span></p>
+      <p class="muted">Planning balance at time: ${fmtMoney(s.planningBalance)} · Source amount: ${fmtMoney(s.paycheckAmount)} · Active reserved now: ${fmtMoney(activeTotal)}</p>
+      <div class="flow-map">${escapeHtml(fundingMap(s))}</div>
+      ${related.length ? related.map(a=>recordRow({title:a.targetName, meta:`${TYPE_LABEL[a.targetType] || a.targetType} · ${a.occurrenceDate ? formatDate(a.occurrenceDate) : 'No date'} · ${a.status || 'history'}`, amount:fmtMoney(a.amount)})).join('') : s.allocations.map(a=>recordRow({title:a.targetName, meta:`${TYPE_LABEL[a.targetType] || a.targetType} · ${a.occurrenceDate ? formatDate(a.occurrenceDate) : 'No date'} · history`, amount:fmtMoney(a.amount)})).join('')}
+      ${actions}
+    `);
+  }).join('');
+  const b=planningBreakdown();
+  document.getElementById('fundingHistory').innerHTML = card('Funding History', `<div class="summary-list">${recordRow({title:'Included in Planning', meta:'Account balances marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Active Assigned Money', meta:'Money currently reserved by Assign Money', amount:fmtMoney(b.assigned)})}${recordRow({title:'Still Unassigned', meta:'Included balance minus active assignments', amount:fmtMoney(b.unassigned)})}</div>${body || '<p class="muted">Nothing funded yet. Once money is assigned, your funding trail will appear here.</p>'}`, '', 'fundingHistory');
 }
 function gotoFunding(type,id,date){ navigate('fundingHistory'); setTimeout(()=>toast('Funding history opened.'),0); }
 function renderSimulator(){
@@ -983,6 +1026,100 @@ function finishPaycheckReceivedFlow(id, updateBalance){
   persist(updateBalance ? 'Balance updated; Assign Money will not add this paycheck again.' : 'Opening Assign Money with balance + paycheck.');
   navigate('assign');
 }
+function openMarkBillPaid(billId, occurrenceDate){
+  const bill = state.bills.find(b=>b.id===billId && !b.deleted); if(!bill)return toast('Bill not found.');
+  const st = itemFundingStatus('bill', bill, occurrenceDate);
+  const accounts = state.accounts.filter(a=>!a.deleted && a.includeInPlanning);
+  const accountOptions = accounts.map(a=>`<option value="${a.id}">${escapeHtml(a.name)} · ${fmtMoney(a.balance)}</option>`).join('');
+  const suggested = Math.max(0, st.unpaidTarget || bill.amount || 0);
+  const first = accounts[0];
+  showInfoModal('Mark Bill Paid', `
+    <p><strong>${escapeHtml(bill.name)}</strong> · occurrence ${formatDate(occurrenceDate)}</p>
+    <p class="muted">Assigned money reserves dollars in Compass. Marking paid closes the bill occurrence. Check the box below if you want Compass to update the selected account balance too.</p>
+    <div class="form-grid">
+      <label>Amount Paid<input id="paidAmountInput" inputmode="decimal" maxlength="10" value="${Number(suggested||0).toFixed(2)}" oninput="previewPaidBalance()" /></label>
+      <label>Payment Date<input id="paidDateInput" type="date" value="${todayISO()}" /></label>
+      <label>Paid From Account<select id="paidAccountInput" onchange="previewPaidBalance()"><option value="">Do not track account</option>${accountOptions}</select></label>
+      <label class="checkline"><input id="paidUpdateBalanceInput" type="checkbox" checked onchange="previewPaidBalance()" /> Also update account balance</label>
+      <label>New Account Balance<input id="paidNewBalanceInput" inputmode="decimal" maxlength="10" value="${first ? (Number(first.balance||0)-Number(suggested||0)).toFixed(2) : '0.00'}" /></label>
+    </div>
+    <div id="paidBalanceHelp" class="field-help">${first ? `Current balance ${fmtMoney(first.balance)} - payment ${fmtMoney(suggested)}` : 'Select an account to update a balance.'}</div>
+    <div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="finishMarkBillPaid('${billId}','${occurrenceDate}')">Mark Paid</button></div>`);
+  const sel=document.getElementById('paidAccountInput'); if(sel && first) sel.value=first.id;
+  previewPaidBalance();
+}
+function previewPaidBalance(){
+  const account = state.accounts.find(a=>a.id===document.getElementById('paidAccountInput')?.value);
+  const amount = parseMoney(document.getElementById('paidAmountInput')?.value || '0');
+  const update = document.getElementById('paidUpdateBalanceInput')?.checked;
+  const newBal = document.getElementById('paidNewBalanceInput');
+  const help = document.getElementById('paidBalanceHelp');
+  if(!newBal || !help) return;
+  if(!update){ newBal.disabled=true; help.textContent='Account balance will not be changed. Update your account balance manually to keep Compass accurate.'; return; }
+  newBal.disabled=false;
+  if(account && amount.ok){ newBal.value=(Number(account.balance||0)-amount.value).toFixed(2); help.textContent=`Current balance ${fmtMoney(account.balance)} - payment ${fmtMoney(amount.value)}`; }
+  else help.textContent='Select an account and enter a valid payment amount.';
+}
+function finishMarkBillPaid(billId, occurrenceDate){
+  const bill = state.bills.find(b=>b.id===billId && !b.deleted); if(!bill)return toast('Bill not found.');
+  const amountParsed = parseMoney(document.getElementById('paidAmountInput')?.value || '0');
+  const paidDate = document.getElementById('paidDateInput')?.value || todayISO();
+  const updateBalance = document.getElementById('paidUpdateBalanceInput')?.checked === true;
+  if(!amountParsed.ok || amountParsed.value <= 0) return toast('Enter a valid paid amount.');
+  if(!isRealDate(paidDate)) return toast('Enter a real payment date.');
+  let accountId = document.getElementById('paidAccountInput')?.value || '';
+  let accountName = '';
+  if(updateBalance){
+    const account = state.accounts.find(a=>a.id===accountId);
+    const newBalance = parseMoney(document.getElementById('paidNewBalanceInput')?.value || '0');
+    if(!account || !newBalance.ok) return toast('Select an account and enter a valid new balance.');
+    accountName = account.name;
+    account.balance = newBalance.value;
+    account.updatedAt = new Date().toISOString();
+  } else if(accountId) {
+    const account = state.accounts.find(a=>a.id===accountId); accountName = account?.name || '';
+  }
+  const paymentId = uid();
+  const closedAllocationIds = closeActiveAllocationsForPayment(billId, occurrenceDate, amountParsed.value, paymentId);
+  const payment = { id:paymentId, billId, billName:bill.name, occurrenceDate, amount:amountParsed.value, paidDate, accountId, accountName, accountBalanceUpdated:updateBalance, status:'active', closedAllocationIds, createdAt:new Date().toISOString() };
+  state.billPayments.unshift(payment);
+  updateSessionStatuses();
+  logActivity('Bill marked paid', `${bill.name} paid ${fmtMoney(amountParsed.value)}`, { billId, paymentId });
+  closeConfirm();
+  persist('Bill marked paid');
+}
+function closeActiveAllocationsForPayment(targetId, occurrenceDate, amount, paymentId){
+  let remaining = Number(amount||0); const closed=[];
+  for (const a of state.fundingAllocations.filter(x=>(x.status||'active')==='active' && x.targetType==='bill' && x.targetId===targetId && (x.occurrenceDate||'')===(occurrenceDate||''))) {
+    if (remaining <= 0) break;
+    const amt = Number(a.amount||0);
+    if (amt <= remaining + 0.005) { a.status='closed-paid'; a.closedByPaymentId=paymentId; closed.push(a.id); remaining -= amt; }
+    else { a.amount = Math.round((amt - remaining)*100)/100; const split={...a, id:uid(), amount:Math.round(remaining*100)/100, status:'closed-paid', closedByPaymentId:paymentId, parentAllocationId:a.id}; state.fundingAllocations.push(split); closed.push(split.id); remaining=0; }
+  }
+  return closed;
+}
+function undoBillPayment(paymentId){
+  const p = arr(state.billPayments).find(x=>x.id===paymentId && (x.status||'active')==='active'); if(!p)return toast('Paid record not found.');
+  confirmAction('Undo Paid Bill', `Undo paid status for “${p.billName}”? This will reopen any reservation closed by the payment${p.accountBalanceUpdated ? ' and add the paid amount back to the selected account balance' : ''}.`, ()=>{
+    p.status='reversed'; p.reversedAt=new Date().toISOString();
+    arr(p.closedAllocationIds).forEach(id=>{ const a=state.fundingAllocations.find(x=>x.id===id); if(!a)return; if(a.parentAllocationId){ const parent=state.fundingAllocations.find(x=>x.id===a.parentAllocationId); if(parent) parent.amount = Math.round((Number(parent.amount||0)+Number(a.amount||0))*100)/100; a.status='reversed'; } else { a.status='active'; delete a.closedByPaymentId; } });
+    if(p.accountBalanceUpdated && p.accountId){ const account=state.accounts.find(a=>a.id===p.accountId); if(account){ account.balance = Math.round((Number(account.balance||0)+Number(p.amount||0))*100)/100; account.updatedAt=new Date().toISOString(); } }
+    updateSessionStatuses(); logActivity('Paid bill undone', p.billName || 'Bill', { paymentId }); persist('Paid bill undone');
+  }, 'Undo Paid');
+}
+function updateSessionStatuses(){
+  state.fundingSessions.forEach(s=>{ if((s.status||'active')==='reversed' || (s.status||'historical')==='historical') return; const related=state.fundingAllocations.filter(a=>a.sessionId===s.id); if(related.length && related.every(a=>(a.status||'active')!=='active')) s.status='closed-paid'; else if((s.status||'active')!=='active') s.status='active'; });
+}
+function reverseFundingSession(sessionId){
+  const session = state.fundingSessions.find(s=>s.id===sessionId); if(!session)return toast('Funding session not found.');
+  if((session.status||'active')!=='active') return toast('Only active funding sessions can be reversed.');
+  confirmAction('Reverse Funding Session', 'Reverse this funding session? This will release the reserved money and update related remaining amounts.', ()=>{
+    session.status='reversed'; session.reversedAt=new Date().toISOString();
+    state.fundingAllocations.filter(a=>a.sessionId===sessionId && (a.status||'active')==='active').forEach(a=>{ a.status='reversed'; a.reversedAt=session.reversedAt; });
+    logActivity('Funding session reversed', session.paycheckName || 'Funding session', { sessionId });
+    persist('Funding session reversed');
+  }, 'Reverse Session');
+}
 function showInfoModal(title, body){
   document.getElementById('confirmTitle').textContent = title;
   document.getElementById('confirmBody').innerHTML = body;
@@ -1020,7 +1157,7 @@ function previewImport(ev){
       if(!cleaned.ok) throw new Error(cleaned.errors.join('\n'));
       pendingImport = cleaned.state;
       const s = pendingImport;
-      document.getElementById('importPreview').innerHTML = `<div class="import-preview"><strong>Import Preview</strong><p>Schema: ${escapeHtml(parsed.schemaVersion || 'legacy')} → ${SCHEMA_VERSION}</p><p>Accounts: ${s.accounts.length} · Bills: ${s.bills.length} · Buckets: ${s.buckets.length} · Goals: ${s.goals.length} · Events: ${s.events.length} · Paychecks: ${s.paychecks.length}</p><p class="muted">${migrated.warnings.concat(cleaned.warnings).map(escapeHtml).join('<br>') || 'No warnings.'}</p><button class="btn primary" onclick="commitImport()">Import Backup</button></div>`;
+      document.getElementById('importPreview').innerHTML = `<div class="import-preview"><strong>Import Preview</strong><p>Data Format: ${escapeHtml(parsed.schemaVersion || 'legacy')} → ${SCHEMA_VERSION}</p><p>Accounts: ${s.accounts.length} · Bills: ${s.bills.length} · Buckets: ${s.buckets.length} · Goals: ${s.goals.length} · Events: ${s.events.length} · Paychecks: ${s.paychecks.length}</p><p class="muted">${migrated.warnings.concat(cleaned.warnings).map(escapeHtml).join('<br>') || 'No warnings.'}</p><button class="btn primary" onclick="commitImport()">Import Backup</button></div>`;
     }catch(err){ pendingImport=null; document.getElementById('importPreview').innerHTML = `<div class="field-error">Import failed validation: ${escapeHtml(err.message)}</div>`; }
   };
   reader.readAsText(file);
@@ -1029,6 +1166,8 @@ function commitImport(){ if(!pendingImport)return toast('No valid import is read
 function migrateBackup(input){
   const warnings=[]; const base = defaultState();
   const src = input && typeof input==='object' ? input : {};
+  const importedVersion = String(src.schemaVersion || 'legacy');
+  const oldFundingRules = importedVersion !== SCHEMA_VERSION;
   const st = { ...base, ...src };
   st.schemaVersion = SCHEMA_VERSION;
   st.household = src.household || { id:src.activeHouseholdId || base.household.id, name:src.householdName || 'My Household', createdAt:src.createdAt || new Date().toISOString() };
@@ -1042,8 +1181,10 @@ function migrateBackup(input){
   st.goals = arr(src.goals).map(g=>({ id:g.id||uid(), name:g.name||'Savings Goal', targetAmount:g.targetAmount ?? g.target ?? g.amount ?? 0, currentAmount:g.currentAmount ?? g.current ?? 0, plannedContribution:g.plannedContribution ?? g.contribution ?? 0, dueDate:g.dueDate||g.targetDate||'', linkedEventId:g.linkedEventId||'', ownerId:g.ownerId||OWNER_HOUSEHOLD }));
   st.events = arr(src.events).map(e=>({ id:e.id||uid(), title:e.title||e.name||'Event', startDate:e.startDate||e.date||todayISO(), endDate:e.endDate||'', linkedGoalId:e.linkedGoalId||'', ownerId:e.ownerId||OWNER_HOUSEHOLD }));
   st.paychecks = arr(src.paychecks).map(p=>({ id:p.id||uid(), name:p.name || p.person || 'Paycheck', amount:p.amount||0, nextPayday:p.nextPayday||p.nextDate||p.date||todayISO(), frequency: normalizeRecurrence(p.frequency || p.recurrence || p.recurring || 'biweekly'), status:p.status||'expected', balanceUpdatedOnReceive:p.balanceUpdatedOnReceive===true, receivedAccountId:p.receivedAccountId||'', receivedOccurrenceDate:p.receivedOccurrenceDate||p.nextPayday||'', actualReceivedAmount:p.actualReceivedAmount||'', ownerId:p.ownerId||OWNER_HOUSEHOLD }));
-  st.fundingSessions = arr(src.fundingSessions);
-  st.fundingAllocations = arr(src.fundingAllocations);
+  st.fundingSessions = arr(src.fundingSessions).map(s=>({ ...s, status: oldFundingRules ? 'historical' : (s.status || 'active') }));
+  st.fundingAllocations = arr(src.fundingAllocations).map(a=>({ ...a, status: oldFundingRules ? 'historical' : (a.status || 'active') }));
+  st.billPayments = arr(src.billPayments).map(p=>({ ...p, status:p.status || 'active' }));
+  if(oldFundingRules && (st.fundingSessions.length || st.fundingAllocations.length)) warnings.push('This backup was created before Assign Money reservations were added. Existing funding history was imported as history only. New funding sessions will reserve money going forward.');
   st.activityLog = arr(src.activityLog);
   if(src.safeToSpend !== undefined || src.plan) warnings.push('Legacy plan/safe-to-spend fields were ignored because Compass v6 recalculates planning results.');
   return { state:st, warnings };
@@ -1054,7 +1195,7 @@ function normalizePriority(v){ v=String(v||'').toLowerCase(); if(PRIORITIES.incl
 function cleanState(input){
   const errors=[], warnings=[]; const st = { ...defaultState(), ...input };
   const checkCount=(name)=>{ if(!Array.isArray(st[name])) { st[name]=[]; warnings.push(`${name} was not an array and was reset.`); } if(st[name].length > LIMITS.recordCounts[name]) errors.push(`${name} exceeds the supported record count.`); };
-  ['members','accounts','bills','buckets','goals','events','paychecks','fundingSessions','fundingAllocations'].forEach(checkCount);
+  ['members','accounts','bills','buckets','goals','events','paychecks','fundingSessions','fundingAllocations','billPayments'].forEach(checkCount);
   st.household = { id:truncate(st.household?.id || uid(),80), name:truncate(st.household?.name || 'My Household',LIMITS.householdName), createdAt:st.household?.createdAt || new Date().toISOString() };
   st.members = st.members.map(m=>({ id:truncate(m.id||uid(),80), name:truncate(m.name||'Member',LIMITS.memberName), system:m.id===OWNER_HOUSEHOLD || m.system===true })).filter(m=>m.name);
   if(!st.members.some(m=>m.id===OWNER_HOUSEHOLD)) st.members.unshift({id:OWNER_HOUSEHOLD,name:'Household',system:true});
@@ -1062,7 +1203,7 @@ function cleanState(input){
   const num=(v,label)=>{ const p=parseMoney(String(v??0)); if(!p.ok){ warnings.push(`${label} had an invalid amount and was set to 0.`); return 0;} return p.value; };
   const date=(v,label,required=true)=>{ if(!v&&!required)return ''; if(!isRealDate(v)){ warnings.push(`${label} had an invalid date and was set to today.`); return todayISO(); } return v; };
   st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), type:accountType(a.type), balance:num(a.balance,'Account balance'), includeInPlanning:a.includeInPlanning!==false, ownerId:validOwner(a.ownerId) }));
-  st.bills = st.bills.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bill',LIMITS.name), amount:num(b.amount,'Bill amount'), dueDate:date(b.dueDate,'Bill due date'), kind:b.kind==='non-fixed'?'non-fixed':'fixed', recurrence:normalizeRecurrence(b.recurrence), priority:normalizePriority(b.priority), paymentType:normalizePaymentType(b.paymentType), ownerId:validOwner(b.ownerId) }));
+  st.bills = st.bills.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bill',LIMITS.name), amount:num(b.amount,'Bill amount'), dueDate:date(b.dueDate,'Bill due date'), kind:b.kind==='non-fixed'?'non-fixed':'fixed', recurrence:normalizeRecurrence(b.recurrence), category:BILL_CATEGORIES.includes(b.category)?b.category:'other', priority:normalizePriority(b.priority), paymentType:normalizePaymentType(b.paymentType), ownerId:validOwner(b.ownerId) }));
   st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), frequency:bucketFrequency(b.frequency), ownerId:validOwner(b.ownerId) }));
   st.goals = st.goals.map(g=>({ id:g.id||uid(), name:truncate(g.name||'Savings Goal',LIMITS.name), targetAmount:num(g.targetAmount,'Goal target'), currentAmount:num(g.currentAmount,'Goal current'), plannedContribution:num(g.plannedContribution,'Goal contribution'), dueDate:g.dueDate?date(g.dueDate,'Goal due date',false):'', linkedEventId:g.linkedEventId||'', ownerId:validOwner(g.ownerId) }));
   st.events = st.events.map(e=>({ id:e.id||uid(), title:truncate(e.title||'Event',LIMITS.title), startDate:date(e.startDate,'Event start date'), endDate:e.endDate?date(e.endDate,'Event end date',false):'', linkedGoalId:e.linkedGoalId||'', ownerId:validOwner(e.ownerId) }));
@@ -1078,6 +1219,11 @@ function cleanState(input){
   st.settings.calendarColors.recordType = { ...defaultState().settings.calendarColors.recordType, ...(st.settings.calendarColors.recordType||{}) };
   st.settings.calendarColors.paymentType = { ...defaultState().settings.calendarColors.paymentType, ...(st.settings.calendarColors.paymentType||{}) };
   st.settings.calendarColors.owner = { ...(st.settings.calendarColors.owner||{}) };
+  const validStatus = v => ['active','reversed','closed-paid','historical'].includes(String(v||'')) ? String(v) : 'historical';
+  st.fundingSessions = arr(st.fundingSessions).map(s=>({ id:s.id||uid(), status:validStatus(s.status), at:s.at||s.createdAt||new Date().toISOString(), memberId:s.memberId||OWNER_HOUSEHOLD, paycheckId:s.paycheckId||'', paycheckName:truncate(s.paycheckName||'Funding Session',LIMITS.name), paycheckAmount:num(s.paycheckAmount||0,'Funding source amount'), planningBalance:num(s.planningBalance||0,'Funding planning balance'), poolMode:s.poolMode||'', fundingSource:s.fundingSource||'', paycheckIncludedInBalance:s.paycheckIncludedInBalance!==false, allocations:arr(s.allocations).map(a=>({ targetType:a.targetType||'bill', targetId:a.targetId||'', occurrenceDate:a.occurrenceDate||'', targetName:truncate(a.targetName||'Assigned item',LIMITS.name), amount:num(a.amount||0,'Funding allocation') })) }));
+  const sessionIds = new Set(st.fundingSessions.map(s=>s.id));
+  st.fundingAllocations = arr(st.fundingAllocations).map(a=>({ id:a.id||uid(), sessionId:a.sessionId||'', status:validStatus(a.status), at:a.at||new Date().toISOString(), targetType:a.targetType||'bill', targetId:a.targetId||'', occurrenceDate:a.occurrenceDate||'', targetName:truncate(a.targetName||'Assigned item',LIMITS.name), amount:num(a.amount||0,'Funding allocation'), closedByPaymentId:a.closedByPaymentId||'', parentAllocationId:a.parentAllocationId||'' })).filter(a=>!a.sessionId || sessionIds.has(a.sessionId));
+  st.billPayments = arr(st.billPayments).map(p=>({ id:p.id||uid(), billId:p.billId||'', billName:truncate(p.billName||'Bill',LIMITS.name), occurrenceDate:date(p.occurrenceDate||todayISO(),'Paid bill occurrence date'), amount:num(p.amount||0,'Paid bill amount'), paidDate:date(p.paidDate||todayISO(),'Payment date'), accountId:p.accountId||'', accountName:truncate(p.accountName||'',LIMITS.name), accountBalanceUpdated:p.accountBalanceUpdated===true, status:['active','reversed'].includes(p.status)?p.status:'active', closedAllocationIds:arr(p.closedAllocationIds), createdAt:p.createdAt||new Date().toISOString(), reversedAt:p.reversedAt||'' }));
   st.schemaVersion = SCHEMA_VERSION;
   return { ok:errors.length===0, errors, warnings, state:st };
 }
@@ -1104,7 +1250,7 @@ function closeDrawer(){ document.getElementById('sideDrawer').classList.remove('
 function toggleGoalActionFields(){ const sel=document.getElementById('goalActionSelect'); const link=document.getElementById('linkGoalWrap'); const create=document.getElementById('createGoalWrap'); if(!sel||!link||!create) return; const isLink = sel.value==='link'; link.style.display=isLink?'block':'none'; create.style.display=isLink?'none':'block'; }
 window.openRecord = openRecord; window.deleteRecord = deleteRecord; window.undoDelete = undoDelete; window.markPaycheckReceived = markPaycheckReceived; window.previewReceivedBalance = previewReceivedBalance; window.finishPaycheckReceivedFlow = finishPaycheckReceivedFlow;
 window.navigate = navigate; window.moveMonth = moveMonth; window.showMonthlyOutlook = showMonthlyOutlook; window.openCalendarRecord = openCalendarRecord; window.showFundedDetails = showFundedDetails;
-window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding;
+window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding; window.openMarkBillPaid = openMarkBillPaid; window.previewPaidBalance = previewPaidBalance; window.finishMarkBillPaid = finishMarkBillPaid; window.undoBillPayment = undoBillPayment; window.reverseFundingSession = reverseFundingSession;
 window.runSimulator = runSimulator; window.setAssignSource = setAssignSource; window.refreshInsights = refreshInsights; window.saveThemePrivacy = saveThemePrivacy; window.explainAvailableToPlan = explainAvailableToPlan; window.dismissThemePrompt = dismissThemePrompt; window.openThemeSettingsFromPrompt = openThemeSettingsFromPrompt; window.convertSimulator = convertSimulator; window.continueConvertSimulator = continueConvertSimulator; window.runSimulatorAI = runSimulatorAI;
 window.savePlanningRules = savePlanningRules; window.saveCalendarDisplaySettings = saveCalendarDisplaySettings; window.openSettingsTopic = openSettingsTopic; window.saveThemePrivacyFromModal = saveThemePrivacyFromModal; window.savePlanningRulesFromModal = savePlanningRulesFromModal; window.saveCalendarDisplaySettingsFromModal = saveCalendarDisplaySettingsFromModal; window.saveHouseholdNameFromModal = saveHouseholdNameFromModal; window.addMemberFromModal = addMemberFromModal; window.saveHouseholdName = saveHouseholdName; window.addMember = addMember; window.deleteMember = deleteMember; window.deleteHousehold = deleteHousehold;
 window.exportBackup = exportBackup; window.previewImport = previewImport; window.commitImport = commitImport; window.closeDialog = closeDialog; window.closeConfirm = closeConfirm; window.persist = persist;
