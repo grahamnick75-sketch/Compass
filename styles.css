@@ -107,3 +107,10 @@ body{background:radial-gradient(circle at 12% 0%, rgba(191,135,56,.18), transpar
 .assign-sticky{position:sticky;top:88px;z-index:5}
 @media (orientation:landscape) and (max-width: 940px){.assign-sticky{top:78px}.assign-sticky .stats-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.assign-sticky .stat{padding:10px}}
 @media(max-width:760px){.hero-copy{max-width:62%}.dashboard-hero .hero-art{width:44%;opacity:.72;bottom:-8px}.dashboard-hero{min-height:250px}.assign-sticky{top:80px}}
+
+/* v6.5.2.4 overflow and money-card safety */
+.wealth-grid .soft-box{display:block;min-width:0;overflow:hidden}
+.wealth-grid .soft-box > div:last-child{margin-top:8px;min-width:0}
+.wealth-grid .soft-box strong,.row > div:last-child strong,.dash-card strong,.available-pill strong{max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.08}
+.row > div:last-child{min-width:0;text-align:right}
+@media(max-width:760px){.row > div:last-child{text-align:left}.wealth-grid .soft-box strong{font-size:20px}.available-pill{max-width:48vw}.available-pill strong{font-size:13px}}
