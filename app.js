@@ -1,11 +1,11 @@
-/* Compass v6.5.2.3 - Assign Money reservation logic and paid bill hotfix */
+/* Compass v6.5.2.4 - Starter household, bucket cycles, and savings goal save workflow */
 const STORAGE_KEY = 'compass_v6_state';
 const HAD_EXISTING_STATE = !!localStorage.getItem(STORAGE_KEY);
-const SCHEMA_VERSION = '6.5.2.3';
+const SCHEMA_VERSION = '6.5.2.4';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const LIMITS = {
   name: 60, title: 75, notes: 500, householdName: 60, memberName: 40,
-  amount: 9999999.99, recordCounts: { accounts: 100, bills: 1000, buckets: 1000, goals: 1000, events: 5000, paychecks: 500, members: 100, fundingSessions: 5000, fundingAllocations: 25000, billPayments: 10000, allocations: 25000 }
+  amount: 9999999.99, recordCounts: { accounts: 100, bills: 1000, buckets: 1000, goals: 1000, events: 5000, paychecks: 500, members: 100, fundingSessions: 5000, fundingAllocations: 25000, billPayments: 10000, goalSaves: 10000, allocations: 25000 }
 };
 const MONEY_RE = /^-?\d{1,7}(\.\d{0,2})?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -21,8 +21,12 @@ const ACCOUNT_TYPES = ['checking','savings','cash','credit-card','investment','4
 const ACCOUNT_TYPE_LABEL = { checking:'Checking', savings:'Savings', cash:'Cash', 'credit-card':'Credit Card', investment:'Investment', '401k':'401(k) / Retirement', hsa:'HSA', 'other-asset':'Other Asset', 'loan-debt':'Loan / Debt' };
 const ASSET_TYPES = ['checking','savings','cash','investment','401k','hsa','other-asset'];
 const DEBT_TYPES = ['credit-card','loan-debt'];
-const BUCKET_FREQUENCIES = ['weekly','paycheck','monthly'];
-const BUCKET_FREQUENCY_LABEL = { weekly:'Weekly', paycheck:'Per Paycheck Cycle', monthly:'Monthly' };
+const BUCKET_FREQUENCIES = ['weekly','paycheck','monthly','one-time'];
+const BUCKET_FREQUENCY_LABEL = { weekly:'Weekly', paycheck:'Per Paycheck', monthly:'Monthly', 'one-time':'One-Time' };
+const BUCKET_FREQUENCY_HELP = { weekly:'Weekly — resets every week', paycheck:'Per Paycheck — resets with each paycheck period', monthly:'Monthly — resets on the 1st of each month', 'one-time':'One-Time — fund once, then stop recommending' };
+const GOAL_CONTRIBUTION_FREQUENCIES = ['monthly','paycheck','one-time'];
+const GOAL_CONTRIBUTION_LABEL = { monthly:'Monthly contribution', paycheck:'Per-paycheck contribution', 'one-time':'One-time contribution' };
+const GOAL_CONTRIBUTION_HELP = { monthly:'Monthly — recommend once each month', paycheck:'Per Paycheck — recommend each paycheck period', 'one-time':'One-Time — recommend until funded once' };
 const PAGE_DESCRIPTIONS = {
   accounts:'Accounts show the money Compass can see in your household plan. Mark only the accounts you want included in day-to-day planning so Available to Plan stays accurate.',
   calendar:'The calendar helps you see when bills, paychecks, goals, and events are coming up. Use it to spot tight weeks before they surprise you.',
@@ -66,13 +70,13 @@ function parseMoney(value){
   return { ok:true, value:Math.round(n*100)/100 };
 }
 function defaultState(){
-  const householdId = uid(); const nickId = uid(); const danielleId = uid();
+  const householdId = uid();
   return {
     schemaVersion: SCHEMA_VERSION,
     appName: 'Compass',
     activeHouseholdId: householdId,
     household: { id: householdId, name:'My Household', createdAt:new Date().toISOString() },
-    members: [ { id: OWNER_HOUSEHOLD, name:'Household', system:true }, { id:nickId, name:'Nick' }, { id:danielleId, name:'Danielle' } ],
+    members: [ { id: OWNER_HOUSEHOLD, name:'Household', system:true } ],
     settings: {
       theme:'whimsical', aiMode:'advisor', aiEndpoint:'', showAvailableHeader:true, themePromptSeen:false, insightsLastRefreshed:'', assignSourceMode:'balance',
       fundedRules: { critical:true, important:true, flexible:false, buckets:true, goals:false },
@@ -87,12 +91,13 @@ function defaultState(){
     accounts: [ { id:uid(), name:'Checking', type:'checking', balance:0, includeInPlanning:true, ownerId:OWNER_HOUSEHOLD } ],
     bills: [],
     buckets: [ { id:uid(), name:'Groceries', targetAmount:400, frequency:'weekly', ownerId:OWNER_HOUSEHOLD }, { id:uid(), name:'Gas', targetAmount:125, frequency:'weekly', ownerId:OWNER_HOUSEHOLD } ],
-    goals: [ { id:uid(), name:'Emergency Fund', targetAmount:10000, currentAmount:0, plannedContribution:100, dueDate:'', ownerId:OWNER_HOUSEHOLD, linkedEventId:'' } ],
+    goals: [ { id:uid(), name:'Emergency Fund', targetAmount:10000, currentAmount:0, plannedContribution:100, contributionFrequency:'monthly', dueDate:'', ownerId:OWNER_HOUSEHOLD, linkedEventId:'' } ],
     events: [],
     paychecks: [],
     fundingSessions: [],
     fundingAllocations: [],
     billPayments: [],
+    goalSaves: [],
     activityLog: []
   };
 }
@@ -133,6 +138,7 @@ function planningBalance(extraState=state){ return extraState.accounts.filter(a=
 function activeFundingAllocations(extraState=state){ return arr(extraState.fundingAllocations).filter(a => (a.status || 'historical') === 'active'); }
 function activeAssignedTotal(extraState=state){ return activeFundingAllocations(extraState).reduce((sum,a)=>sum + Number(a.amount || 0), 0); }
 function unassignedBalance(extraState=state){ return planningBalance(extraState) - activeAssignedTotal(extraState); }
+function availableToPlan(extraState=state){ return unassignedBalance(extraState); }
 function planningBreakdown(extraState=state){ const included = planningBalance(extraState); const assigned = activeAssignedTotal(extraState); return { included, assigned, unassigned: included - assigned }; }
 function accountType(v){ const raw=String(v||'').toLowerCase().trim(); const aliases={saving:'savings',retirement:'401k','401(k)':'401k','401k-retirement':'401k','credit card':'credit-card',credit:'credit-card',loan:'loan-debt',debt:'loan-debt',asset:'other-asset'}; const key=aliases[raw] || raw; return ACCOUNT_TYPES.includes(key) ? key : 'checking'; }
 function isDebtAccount(a){ return DEBT_TYPES.includes(accountType(a.type)); }
@@ -140,11 +146,19 @@ function assetsTotal(){ return state.accounts.filter(a=>!a.deleted && ASSET_TYPE
 function debtsTotal(){ return state.accounts.filter(a=>!a.deleted && isDebtAccount(a)).reduce((sum,a)=>sum+Math.abs(Number(a.balance||0)),0); }
 function netPosition(){ return assetsTotal() - debtsTotal(); }
 function pageIntro(id){ const text = PAGE_DESCRIPTIONS[id] || ''; return text ? `<p class="page-purpose">${escapeHtml(text)}</p>` : ''; }
-function updateHeaderBalance(){ const el=document.getElementById('availablePill'); if(!el)return; const show=state.settings.showAvailableHeader!==false; const b=planningBreakdown(); el.innerHTML = `<span>Still Unassigned</span><strong>${show ? fmtMoney(b.unassigned) : '••••'}</strong>`; el.title='Still Unassigned is your included planning balance minus active assigned/reserved money.'; }
-function explainAvailableToPlan(){ const b=planningBreakdown(); showInfoModal('Still Unassigned', `<p><strong>Assign Money now reserves dollars inside Compass.</strong></p><div class="summary-list">${recordRow({title:'Included in Planning', meta:'Balances from accounts marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Already Assigned', meta:'Active funding sessions still reserving money', amount:'-'+fmtMoney(b.assigned)})}${recordRow({title:'Still Unassigned', meta:'Money that is still free to plan with', amount:fmtMoney(b.unassigned)})}</div><p class="muted">Compass does not change bank balances unless you explicitly choose to update an account during a paid bill flow.</p>`); }
+function updateHeaderBalance(){ const el=document.getElementById('availablePill'); if(!el)return; const show=state.settings.showAvailableHeader!==false; const b=planningBreakdown(); el.innerHTML = `<span>Available to Plan</span><strong>${show ? fmtMoney(b.unassigned) : '••••'}</strong>`; el.title='Available to Plan is your included planning balance minus active assigned/reserved money.'; }
+function explainAvailableToPlan(){ const b=planningBreakdown(); showInfoModal('Available to Plan', `<p><strong>Assign Money reserves dollars inside Compass.</strong></p><div class="summary-list">${recordRow({title:'Included in Planning', meta:'Balances from accounts marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Already Assigned', meta:'Active funding sessions still reserving money', amount:'-'+fmtMoney(b.assigned)})}${recordRow({title:'Available to Plan', meta:'Money that is still free to plan with', amount:fmtMoney(b.unassigned)})}</div><p class="muted">Compass does not change bank balances unless you explicitly choose to update an account during a paid bill or saved-goal flow.</p>`); }
 function bucketFrequency(v){ return BUCKET_FREQUENCIES.includes(String(v||'').toLowerCase()) ? String(v||'').toLowerCase() : 'weekly'; }
+function goalContributionFrequency(v){ return GOAL_CONTRIBUTION_FREQUENCIES.includes(String(v||'').toLowerCase()) ? String(v||'').toLowerCase() : 'monthly'; }
+function monthStartIso(dateIso=todayISO()){ const d=parseDate(dateIso); return iso(new Date(d.getFullYear(), d.getMonth(), 1)); }
+function weekStartIso(dateIso=todayISO()){ const d=parseDate(dateIso); d.setDate(d.getDate()-d.getDay()); return iso(d); }
+function oneTimeAnchor(record){ const raw = record?.oneTimeDate || record?.createdAt || record?.dueDate || todayISO(); return isRealDate(String(raw).slice(0,10)) ? String(raw).slice(0,10) : todayISO(); }
+function bucketOccurrenceDate(bucket, dateIso=todayISO()){ const freq=bucketFrequency(bucket.frequency); if(freq==='monthly') return monthStartIso(dateIso); if(freq==='weekly') return weekStartIso(dateIso); if(freq==='one-time') return oneTimeAnchor(bucket); return dateIso; }
+function goalOccurrenceDate(goal, dateIso=todayISO()){ const freq=goalContributionFrequency(goal.contributionFrequency); if(freq==='monthly') return monthStartIso(dateIso); if(freq==='one-time') return oneTimeAnchor(goal); return dateIso; }
 function weeksInMonth(date=new Date()){ const y=date.getFullYear(), m=date.getMonth(); return Math.round(new Date(y,m+1,0).getDate()/7); }
-function bucketMonthlyAmount(bucket, monthDate=calendarCursor){ const amount=Number(bucket.targetAmount||0); const freq=bucketFrequency(bucket.frequency); if(freq==='monthly') return amount; if(freq==='paycheck') return amount * Math.max(1, expandRecurring(state.paychecks, iso(new Date(monthDate.getFullYear(),monthDate.getMonth(),1)), iso(new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0)), 'nextPayday').length); return amount * weeksInMonth(monthDate); }
+function bucketMonthlyAmount(bucket, monthDate=calendarCursor){ const amount=Number(bucket.targetAmount||0); const freq=bucketFrequency(bucket.frequency); if(freq==='one-time') return amount; if(freq==='monthly') return amount; if(freq==='paycheck') return amount * Math.max(1, expandRecurring(state.paychecks, iso(new Date(monthDate.getFullYear(),monthDate.getMonth(),1)), iso(new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0)), 'nextPayday').length); return amount * weeksInMonth(monthDate); }
+function goalContributionAmount(goal){ const remainingGoal = Math.max(0, Number(goal.targetAmount||0) - Number(goal.currentAmount||0)); return Math.min(Number(goal.plannedContribution||0), remainingGoal || Number(goal.plannedContribution||0)); }
+function goalMonthlyContributionAmount(goal, monthDate=calendarCursor){ const amount=goalContributionAmount(goal); const freq=goalContributionFrequency(goal.contributionFrequency); if(freq==='paycheck') return amount * Math.max(1, expandRecurring(state.paychecks, iso(new Date(monthDate.getFullYear(),monthDate.getMonth(),1)), iso(new Date(monthDate.getFullYear(),monthDate.getMonth()+1,0)), 'nextPayday').length); return amount; }
 function reminderItems(days=7){ const end=iso(addDays(parseDate(todayISO()),days)); return expandRecurring(state.bills,todayISO(),end,'dueDate').map(b=>{ const st=itemFundingStatus('bill',b,b.occurrenceDate); const d=daysBetween(todayISO(), b.occurrenceDate); return {...b, remaining:st.remaining, daysAway:d}; }).filter(b=>b.remaining>0).sort((a,b)=>a.occurrenceDate.localeCompare(b.occurrenceDate)); }
 function nextDateForRecurrence(d, rec){ if (rec === 'weekly') return addDays(d,7); if (rec === 'biweekly') return addDays(d,14); if (rec === 'monthly') return addMonths(d,1); return addDays(d,36500); }
 function expandRecurring(items, startIso, endIso, dateKey){
@@ -184,26 +198,40 @@ function paidAmount(targetType, targetId, occurrenceDate=''){
     .filter(p => (p.status || 'active') === 'active' && p.billId === targetId && (p.occurrenceDate || '') === (occurrenceDate || ''))
     .reduce((sum,p)=>sum+Number(p.amount||0),0);
 }
+function savedGoalAmount(goalId, occurrenceDate=''){
+  return arr(state.goalSaves)
+    .filter(g => (g.status || 'active') === 'active' && g.goalId === goalId && (g.occurrenceDate || '') === (occurrenceDate || ''))
+    .reduce((sum,g)=>sum+Number(g.amount||0),0);
+}
+function settledAmount(targetType, targetId, occurrenceDate=''){
+  if (targetType === 'bill') return paidAmount(targetType, targetId, occurrenceDate);
+  if (targetType === 'goal') return savedGoalAmount(targetId, occurrenceDate);
+  return 0;
+}
 function billPaymentFor(billId, occurrenceDate=''){
   return arr(state.billPayments).filter(p => (p.status || 'active') === 'active' && p.billId === billId && (p.occurrenceDate || '') === (occurrenceDate || '')).sort((a,b)=>(b.paidDate||'').localeCompare(a.paidDate||''));
+}
+function goalSavesFor(goalId, occurrenceDate=''){
+  return arr(state.goalSaves).filter(g => (g.status || 'active') === 'active' && g.goalId === goalId && (g.occurrenceDate || '') === (occurrenceDate || '')).sort((a,b)=>(b.savedDate||'').localeCompare(a.savedDate||''));
 }
 function targetAmountFor(type, item){
   if (type === 'bill') return Number(item.amount || 0);
   if (type === 'bucket') return Number(item.targetAmount || item.amount || 0);
-  if (type === 'goal') return Number(item.plannedContribution || item.amount || 0);
+  if (type === 'goal') return goalContributionAmount(item);
   return Number(item.amount || 0);
 }
 function itemFundingStatus(type, item, occurrenceDate=''){
   const target = targetAmountFor(type, item);
-  const paid = paidAmount(type, item.id, occurrenceDate);
-  const unpaidTarget = Math.max(0, target - paid);
+  const settled = settledAmount(type, item.id, occurrenceDate);
+  const unpaidTarget = Math.max(0, target - settled);
   const rawFunded = activeAssignedAmount(type, item.id, occurrenceDate);
-  const funded = type === 'bill' ? Math.min(rawFunded, unpaidTarget) : rawFunded;
+  const funded = (type === 'bill' || type === 'goal') ? Math.min(rawFunded, unpaidTarget) : rawFunded;
   const remaining = Math.max(0, unpaidTarget - funded);
-  const covered = Math.min(target, paid + funded);
+  const covered = Math.min(target, settled + funded);
   const pct = target > 0 ? clamp((covered/target)*100,0,100) : 0;
-  const status = type === 'bill' && paid >= target && target > 0 ? 'paid' : funded >= unpaidTarget && unpaidTarget > 0 ? 'funded' : (funded > 0 || paid > 0) ? 'partial' : 'unfunded';
-  return { target, paid, funded, rawFunded, unpaidTarget, remaining, pct, status };
+  const completeStatus = type === 'bill' ? 'paid' : type === 'goal' ? 'saved' : 'funded';
+  const status = settled >= target && target > 0 ? completeStatus : funded >= unpaidTarget && unpaidTarget > 0 ? 'funded' : (funded > 0 || settled > 0) ? 'partial' : 'unfunded';
+  return { target, paid: type==='bill' ? settled : 0, saved: type==='goal' ? settled : 0, settled, funded, rawFunded, unpaidTarget, remaining, pct, status };
 }
 function recurringLabel(v){ return ({'one-time':'One-time',weekly:'Weekly',biweekly:'Biweekly',monthly:'Monthly'})[v] || 'One-time'; }
 function priorityRankForTarget(t){
@@ -218,10 +246,11 @@ function assignTargetsForPaycheck(paycheckOccurrence){
   // v6.2: include same-day items by making the range inclusive: today through next paycheck.
   const billOccurrences = expandRecurring(state.bills, today, through, 'dueDate')
     .map(b => ({ type:'bill', id:b.id, name:b.name, ownerId:b.ownerId, amount:Number(b.amount||0), occurrenceDate:b.occurrenceDate, dueDate:b.occurrenceDate, priority:b.priority, paymentType:normalizePaymentType(b.paymentType), label:`${PRIORITY_LABEL[b.priority] || 'Flexible'} bill · ${PAYMENT_LABEL[normalizePaymentType(b.paymentType)]} · due ${b.occurrenceDate}` }));
-  const bucketTargets = state.buckets.filter(b=>!b.deleted).map(b => ({ type:'bucket', id:b.id, name:b.name, ownerId:b.ownerId, amount:Number(b.targetAmount||0), occurrenceDate:paycheckOccurrence?.occurrenceDate || today, priority:'bucket', label:'Standard bucket' }));
-  const goalTargets = state.goals.filter(g=>!g.deleted).map(g => ({ type:'goal', id:g.id, name:g.name, ownerId:g.ownerId, amount:Number(g.plannedContribution||0), occurrenceDate:paycheckOccurrence?.occurrenceDate || today, priority:'goal', label:'Savings goal contribution' })).filter(g=>g.amount>0);
+  const baseDate = paycheckOccurrence?.occurrenceDate || today;
+  const bucketTargets = state.buckets.filter(b=>!b.deleted).map(b => ({ type:'bucket', id:b.id, name:b.name, ownerId:b.ownerId, amount:Number(b.targetAmount||0), occurrenceDate:bucketOccurrenceDate(b, baseDate), priority:'bucket', label:`Standard bucket · ${BUCKET_FREQUENCY_HELP[bucketFrequency(b.frequency)]}` }));
+  const goalTargets = state.goals.filter(g=>!g.deleted).map(g => ({ type:'goal', id:g.id, name:g.name, ownerId:g.ownerId, amount:goalContributionAmount(g), occurrenceDate:goalOccurrenceDate(g, baseDate), priority:'goal', label:`Savings goal · ${GOAL_CONTRIBUTION_HELP[goalContributionFrequency(g.contributionFrequency)]}` })).filter(g=>g.amount>0);
   return [...billOccurrences, ...bucketTargets, ...goalTargets]
-    .map(t => ({ ...t, ...itemFundingStatus(t.type, {id:t.id, amount:t.amount, targetAmount:t.amount, plannedContribution:t.amount}, t.occurrenceDate) }))
+    .map(t => ({ ...t, ...itemFundingStatus(t.type, {id:t.id, amount:t.amount, targetAmount:t.amount, plannedContribution:t.amount, currentAmount:0}, t.occurrenceDate) }))
     .filter(t => t.remaining > 0)
     .sort((a,b)=> priorityRankForTarget(a)-priorityRankForTarget(b) || (a.dueDate||a.occurrenceDate).localeCompare(b.dueDate||b.occurrenceDate) || a.name.localeCompare(b.name));
 }
@@ -247,16 +276,19 @@ function buildTimeline({ includeExpectedIncome=false, extraSpend=0, days=120 }={
   const payDates = [start, ...upcomingPaychecks(days).map(p=>p.occurrenceDate)].filter((v,i,a)=>a.indexOf(v)===i).sort();
   if (state.settings.fundedRules.buckets) {
     for (const date of payDates) state.buckets.filter(b=>!b.deleted).forEach(b=>{
-      const status = itemFundingStatus('bucket', b, date);
+      const occurrenceDate = bucketOccurrenceDate(b, date);
+      const status = itemFundingStatus('bucket', b, occurrenceDate);
       const remaining = Math.max(0, Number(b.targetAmount||0) - status.funded);
-      if (remaining > 0) events.push({ date, amount:-remaining, label:b.name, type:'bucket' });
+      if (remaining > 0) events.push({ date:occurrenceDate, amount:-remaining, label:b.name, type:'bucket' });
     });
   }
   if (state.settings.fundedRules.goals) {
     for (const date of payDates) state.goals.filter(g=>!g.deleted && Number(g.plannedContribution||0)>0).forEach(g=>{
-      const status = itemFundingStatus('goal', g, date);
-      const remaining = Math.max(0, Number(g.plannedContribution||0) - status.funded);
-      if (remaining > 0) events.push({ date, amount:-remaining, label:g.name, type:'goal' });
+      const occurrenceDate = goalOccurrenceDate(g, date);
+      const target = goalContributionAmount(g);
+      const status = itemFundingStatus('goal', g, occurrenceDate);
+      const remaining = Math.max(0, target - status.saved - status.funded);
+      if (remaining > 0) events.push({ date:occurrenceDate, amount:-remaining, label:g.name, type:'goal' });
     });
   }
   if (extraSpend > 0) events.push({ date:start, amount:-extraSpend, label:'Simulator expense', type:'simulator' });
@@ -295,7 +327,7 @@ function advisorSummary(){
   const next = nextPaycheck();
   const targets = advisorTargets().slice(0,8);
   let remainingCash = cash;
-  const lines = [`Still Unassigned: ${fmtMoney(cash)}`, next ? `Next Paycheck: ${next.name} · ${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : 'Next Paycheck: none entered', '', 'Recommended Allocation Order:'];
+  const lines = [`Available to Plan: ${fmtMoney(cash)}`, next ? `Next Paycheck: ${next.name} · ${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : 'Next Paycheck: none entered', '', 'Recommended Allocation Order:'];
   if (!targets.length) {
     lines.push('No upcoming bills, buckets, or savings contributions need funding before the next paycheck.');
   } else {
@@ -320,14 +352,14 @@ function advisorCardsHTML(){
     const payment = isBill ? `<span><b>Payment Type:</b> ${PAYMENT_LABEL[normalizePaymentType(t.paymentType)]}</span>` : '';
     return `<div class="advisor-action"><div class="advisor-rank">${idx+1}</div><div class="advisor-body"><h3>${escapeHtml(t.name)}</h3><div class="advisor-grid"><span><b>Type:</b> ${isBill ? `${PRIORITY_LABEL[t.priority] || 'Flexible'} Bill` : TYPE_LABEL[t.type] || t.type}</span>${t.dueDate?`<span><b>Due:</b> ${formatDate(t.dueDate)}</span>`:''}${payment}<span><b>Remaining:</b> ${fmtMoney(t.remaining)}</span><span><b>Suggested:</b> ${fmtMoney(suggested)}</span></div></div></div>`;
   }).join('');
-  return `<div class="advisor-summary-grid">${softBox('Still Unassigned', `<strong class="big-money">${fmtMoney(cash)}</strong>`, 'Included account money not already assigned')}${softBox('Next Paycheck', next ? `<strong>${escapeHtml(next.name)}</strong><br>${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : '<span class="muted">No paycheck entered</span>', 'Expected income context')}</div><h3>Recommended Allocation Order</h3>${actionCards || '<p class="muted">No upcoming bills, buckets, or savings contributions need funding before the next paycheck.</p>'}`;
+  return `<div class="advisor-summary-grid">${softBox('Available to Plan', `<strong class="big-money">${fmtMoney(cash)}</strong>`, 'Included account money not already assigned')}${softBox('Next Paycheck', next ? `<strong>${escapeHtml(next.name)}</strong><br>${formatDate(next.occurrenceDate)} · ${fmtMoney(next.amount)}` : '<span class="muted">No paycheck entered</span>', 'Expected income context')}</div><h3>Recommended Allocation Order</h3>${actionCards || '<p class="muted">No upcoming bills, buckets, or savings contributions need funding before the next paycheck.</p>'}`;
 }
 function insightSummary(mode='advisor'){
   const funded = calculateFundedThrough({includeExpectedIncome:false});
   const projected = calculateFundedThrough({includeExpectedIncome:true});
   const next = nextPaycheck();
   if (mode === 'analyst') {
-    return `Funded Through is ${formatDate(funded.throughDate)} using current planning balances only. Projected Through is ${formatDate(projected.throughDate)} when expected income is included. Still Unassigned is ${fmtMoney(unassignedBalance())}. ${next ? `Next paycheck is ${next.name} on ${formatDate(next.occurrenceDate)} for ${fmtMoney(next.amount)}.` : 'No upcoming paycheck is entered.'}`;
+    return `Funded Through is ${formatDate(funded.throughDate)} using current planning balances only. Projected Through is ${formatDate(projected.throughDate)} when expected income is included. Available to Plan is ${fmtMoney(unassignedBalance())}. ${next ? `Next paycheck is ${next.name} on ${formatDate(next.occurrenceDate)} for ${fmtMoney(next.amount)}.` : 'No upcoming paycheck is entered.'}`;
   }
   if (mode === 'simulator') {
     return `Ask a what-if question in plain English. Examples: “What happens if I put $100 into savings?” or “What if we finance a new vehicle for $650/month?” Compass will compare your current Funded Through and Projected Through dates against the scenario.`;
@@ -450,7 +482,7 @@ function renderDashboard(){
           <small>Includes expected income</small>
         </button>
         <button class="dash-card balance" onclick="navigate('accounts')">
-          <span>Still Unassigned</span>
+          <span>Available to Plan</span>
           <strong>${fmtMoney(moneyTruth.unassigned)}</strong>
           <small>${fmtMoney(moneyTruth.included)} included - ${fmtMoney(moneyTruth.assigned)} assigned</small>
         </button>
@@ -540,7 +572,7 @@ function renderAccounts(){
     actions:actionButtons('account',a.id)
   })).join('');
   const wealth = `<div class="wealth-grid">
-    ${softBox('Included in Planning', `<strong>${fmtMoney(planningBalance())}</strong>`, 'Balances from included accounts')}${softBox('Still Unassigned', `<strong>${fmtMoney(unassignedBalance())}</strong>`, 'Included balance minus active assignments')}
+    ${softBox('Included in Planning', `<strong>${fmtMoney(planningBalance())}</strong>`, 'Balances from included accounts')}${softBox('Available to Plan', `<strong>${fmtMoney(unassignedBalance())}</strong>`, 'Included balance minus active assignments')}
     ${softBox('Other Assets', `<strong>${fmtMoney(Math.max(0, assetsTotal()-planningBalance()))}</strong>`, 'Excluded assets and long-term accounts')}
     ${softBox('Debts', `<strong>-${fmtMoney(debtsTotal())}</strong>`, 'Credit card and loan/debt accounts')}
     ${softBox('Estimated Net Position', `<strong>${fmtMoney(netPosition())}</strong>`, 'Assets minus debts')}
@@ -571,20 +603,26 @@ function nextOccurrenceDate(firstDate, rec){
 }
 function renderBuckets(){
   const rows = state.buckets.filter(b=>!b.deleted).map(b=>{
-    const date = nextPaycheck()?.occurrenceDate || todayISO();
+    const baseDate = nextPaycheck()?.occurrenceDate || todayISO();
+    const date = bucketOccurrenceDate(b, baseDate);
     const st = itemFundingStatus('bucket', b, date);
-    return recordRow({ title:b.name, meta:`Standard bucket · ${BUCKET_FREQUENCY_LABEL[bucketFrequency(b.frequency)]} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.targetAmount), actions:`<button class="btn ghost" onclick="gotoFunding('bucket','${b.id}','${date}')">History</button>${actionButtons('bucket',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded for current cycle`} });
+    return recordRow({ title:b.name, meta:`Standard bucket · ${BUCKET_FREQUENCY_HELP[bucketFrequency(b.frequency)]} · Owner: ${ownerName(b.ownerId)}`, amount:fmtMoney(b.targetAmount), actions:`<button class="btn ghost" onclick="gotoFunding('bucket','${b.id}','${date}')">History</button>${actionButtons('bucket',b.id)}`, progress:{pct:st.pct,label:`${fmtMoney(st.funded)} / ${fmtMoney(st.target)} funded for current cycle`} });
   }).join('');
-  document.getElementById('buckets').innerHTML = card('Buckets', `<div class="button-row"><button class="btn primary" onclick="openRecord('bucket')">Add Bucket</button></div>${rows || emptyState('No buckets yet.')}`, '', 'buckets');
+  document.getElementById('buckets').innerHTML = card('Buckets', `<div class="button-row"><button class="btn primary" onclick="openRecord('bucket')">Add Bucket</button></div><p class="muted">Monthly buckets reset on the 1st. Weekly buckets reset each week. Per Paycheck buckets reset with each paycheck period.</p>${rows || emptyState('No buckets yet.')}`, '', 'buckets');
 }
 function renderGoals(){
   const rows = state.goals.filter(g=>!g.deleted).map(g=>{
-    const date = nextPaycheck()?.occurrenceDate || todayISO();
+    const baseDate = nextPaycheck()?.occurrenceDate || todayISO();
+    const date = goalOccurrenceDate(g, baseDate);
     const st = itemFundingStatus('goal', g, date);
     const currentPct = Number(g.targetAmount)>0 ? (Number(g.currentAmount||0)/Number(g.targetAmount))*100 : 0;
-    return recordRow({ title:g.name, meta:`Due: ${g.dueDate?formatDate(g.dueDate):'Optional'} · Owner: ${ownerName(g.ownerId)} · Contribution: ${fmtMoney(g.plannedContribution)}`, amount:`${fmtMoney(g.currentAmount)} / ${fmtMoney(g.targetAmount)}`, actions:`<button class="btn ghost" onclick="gotoFunding('goal','${g.id}','${date}')">History</button>${actionButtons('goal',g.id)}`, progress:{pct:currentPct,label:`${Math.round(currentPct)}% of goal saved`} });
+    const saves = goalSavesFor(g.id, date);
+    const savedActions = saves.map(x=>`<button class="btn ghost" onclick="undoGoalSave('${x.id}')">Undo Saved</button>`).join('');
+    const markSaved = st.funded > 0 ? `<button class="btn good" onclick="openMarkGoalSaved('${g.id}','${date}')">Move to Saved</button>` : '';
+    return recordRow({ title:g.name, meta:`Due: ${g.dueDate?formatDate(g.dueDate):'Optional'} · Owner: ${ownerName(g.ownerId)} · ${GOAL_CONTRIBUTION_HELP[goalContributionFrequency(g.contributionFrequency)]} · Planned: ${fmtMoney(g.plannedContribution)}`, amount:`${fmtMoney(g.currentAmount)} / ${fmtMoney(g.targetAmount)}`, chips:`<span class="chip ${st.status==='saved'||st.status==='funded'?'good':st.status==='partial'?'warn':''}">${st.status}</span>`, actions:`${markSaved}${savedActions}<button class="btn ghost" onclick="gotoFunding('goal','${g.id}','${date}')">History</button>${actionButtons('goal',g.id)}`, progress:{pct:currentPct,label:`${Math.round(currentPct)}% of goal saved · ${fmtMoney(st.funded)} assigned this period · ${fmtMoney(st.saved)} moved to saved this period`} });
   }).join('');
-  document.getElementById('goals').innerHTML = card('Savings Goals', `<div class="button-row"><button class="btn primary" onclick="openRecord('goal')">Add Savings Goal</button></div>${rows || emptyState('No savings goals yet.')}`, '', 'goals');
+  const saveHistory = arr(state.goalSaves).filter(x=>(x.status||'active')==='active').slice(0,8).map(x=>recordRow({title:x.goalName||'Savings goal', meta:`Saved ${formatDate(x.savedDate)} · ${x.fromAccountName ? 'from '+escapeHtml(x.fromAccountName) : 'account not tracked'}${x.toAccountName ? ' · to '+escapeHtml(x.toAccountName) : ''} · period ${formatDate(x.occurrenceDate)}`, amount:fmtMoney(x.amount), actions:`<button class="btn ghost" onclick="undoGoalSave('${x.id}')">Undo Saved</button>`})).join('');
+  document.getElementById('goals').innerHTML = card('Savings Goals', `<div class="button-row"><button class="btn primary" onclick="openRecord('goal')">Add Savings Goal</button></div><p class="muted">Assign Money reserves planned contributions. Move to Saved confirms the money was actually saved or transferred.</p>${rows || emptyState('No savings goals yet.')}<h3>Saved History</h3>${saveHistory || '<p class="muted">No saved goal transfers recorded yet.</p>'}`, '', 'goals');
 }
 function renderEvents(){
   const rows = state.events.filter(e=>!e.deleted).sort((a,b)=>a.startDate.localeCompare(b.startDate)).map(e=> recordRow({ title:e.title, meta:`${formatDate(e.startDate)}${e.endDate?`–${formatDate(e.endDate)}`:''} · Owner: ${ownerName(e.ownerId)} ${e.linkedGoalId?`· Linked goal: ${state.goals.find(g=>g.id===e.linkedGoalId)?.name || 'Missing goal'}`:''}`, actions:actionButtons('event',e.id)})).join('');
@@ -650,7 +688,7 @@ function monthlyOutlookData(){
   const fixedBills = expandRecurring(state.bills, startIso, endIso, 'dueDate').filter(b=>b.kind !== 'non-fixed');
   const fixedTotal = fixedBills.reduce((sum,b)=>sum+Number(b.amount||0),0);
   const bucketTotal = state.buckets.filter(b=>!b.deleted).reduce((sum,b)=>sum+bucketMonthlyAmount(b, calendarCursor),0);
-  const goalTotal = state.goals.filter(g=>!g.deleted).reduce((sum,g)=>sum+Number(g.plannedContribution||0),0);
+  const goalTotal = state.goals.filter(g=>!g.deleted).reduce((sum,g)=>sum+goalMonthlyContributionAmount(g, calendarCursor),0);
   return { month: calendarCursor.toLocaleString(undefined,{month:'long',year:'numeric'}), incomeTotal, fixedTotal, bucketTotal, goalTotal, net: incomeTotal - fixedTotal - bucketTotal - goalTotal };
 }
 function showMonthlyOutlook(){
@@ -679,9 +717,9 @@ function renderAssign(){
   if (sourceMode === 'paycheck' && selected && selectedAssignPaycheckId !== assignKey(selected)) selectedAssignPaycheckId = assignKey(selected);
   const targets = assignTargetsForSource(sourceMode === 'paycheck' ? selected : null);
   const pool = assignPoolForSource(sourceMode === 'paycheck' ? selected : null);
-  const sourceSelector = `<div class="funding-source"><label><input type="radio" name="assignSource" value="balance" ${sourceMode==='balance'?'checked':''} onchange="setAssignSource('balance')" /> <strong>Still Unassigned</strong><span>Use included account money that has not already been assigned.</span></label><label><input type="radio" name="assignSource" value="paycheck" ${sourceMode==='paycheck'?'checked':''} onchange="setAssignSource('paycheck')" /> <strong>Paycheck</strong><span>Use a specific paycheck to fund upcoming items.</span></label></div>`;
+  const sourceSelector = `<div class="funding-source"><label><input type="radio" name="assignSource" value="balance" ${sourceMode==='balance'?'checked':''} onchange="setAssignSource('balance')" /> <strong>Available to Plan</strong><span>Use included account money that has not already been assigned.</span></label><label><input type="radio" name="assignSource" value="paycheck" ${sourceMode==='paycheck'?'checked':''} onchange="setAssignSource('paycheck')" /> <strong>Paycheck</strong><span>Use a specific paycheck to fund upcoming items.</span></label></div>`;
   const paycheckSelect = sourceMode === 'paycheck' ? `<div class="form-grid"><label>Selected Paycheck<select id="assignPaycheck" onchange="selectedAssignPaycheckId=this.value; renderAssign()">${paychecks.map(p=>`<option value="${assignKey(p)}" ${assignKey(p)===selectedAssignPaycheckId?'selected':''}>${escapeHtml(p.name)} · ${formatDate(p.occurrenceDate)} · ${fmtMoney(p.amount)}</option>`).join('')}</select></label></div>` : '';
-  const help = sourceMode === 'balance' ? 'Using Still Unassigned only. No paycheck is required.' : (pool.addPaycheck ? `Available to Plan ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`);
+  const help = sourceMode === 'balance' ? 'Using Available to Plan only. No paycheck is required.' : (pool.addPaycheck ? `Available to Plan ${fmtMoney(pool.base)} + Paycheck ${fmtMoney(pool.paycheckAmount)}` : `Using updated planning balance only. Paycheck already reflected in account balance.`);
   document.getElementById('assign').innerHTML = card('Assign Money', `
     ${sourceSelector}${paycheckSelect}
     <p class="muted">Suggested plan sorted by Critical Bills → Important Bills → Buckets → Flexible Bills → Savings Goals. Check items and adjust amounts; remaining funds update immediately.</p>
@@ -740,7 +778,7 @@ function fundingMap(session){
 }
 function renderFundingHistory(filter=null){
   const sessions = state.fundingSessions;
-  const statusLabel = s => ({active:'Active reservation', reversed:'Reversed', 'closed-paid':'Closed by payment', historical:'History only'})[s.status || 'historical'] || 'History only';
+  const statusLabel = s => ({active:'Active reservation', reversed:'Reversed', 'closed-paid':'Closed by payment', 'closed-saved':'Closed by saved goal', historical:'History only'})[s.status || 'historical'] || 'History only';
   const body = sessions.map(s=>{
     const status = s.status || 'historical';
     const related = state.fundingAllocations.filter(a=>a.sessionId===s.id);
@@ -755,7 +793,7 @@ function renderFundingHistory(filter=null){
     `);
   }).join('');
   const b=planningBreakdown();
-  document.getElementById('fundingHistory').innerHTML = card('Funding History', `<div class="summary-list">${recordRow({title:'Included in Planning', meta:'Account balances marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Active Assigned Money', meta:'Money currently reserved by Assign Money', amount:fmtMoney(b.assigned)})}${recordRow({title:'Still Unassigned', meta:'Included balance minus active assignments', amount:fmtMoney(b.unassigned)})}</div>${body || '<p class="muted">Nothing funded yet. Once money is assigned, your funding trail will appear here.</p>'}`, '', 'fundingHistory');
+  document.getElementById('fundingHistory').innerHTML = card('Funding History', `<div class="summary-list">${recordRow({title:'Included in Planning', meta:'Account balances marked Include in Planning', amount:fmtMoney(b.included)})}${recordRow({title:'Active Assigned Money', meta:'Money currently reserved by Assign Money', amount:fmtMoney(b.assigned)})}${recordRow({title:'Available to Plan', meta:'Included balance minus active assignments', amount:fmtMoney(b.unassigned)})}</div>${body || '<p class="muted">Nothing funded yet. Once money is assigned, your funding trail will appear here.</p>'}`, '', 'fundingHistory');
 }
 function gotoFunding(type,id,date){ navigate('fundingHistory'); setTimeout(()=>toast('Funding history opened.'),0); }
 function renderSimulator(){
@@ -839,7 +877,7 @@ function openSettingsTopic(topic){
   if(topic==='household') return settingsModal('Household', householdSettingsBody());
   if(topic==='backup') return settingsModal('Backup & Import', `<p class="muted">Export everything. Imports are validated, migrated, and previewed before changing live data.</p><div class="button-row"><button class="btn primary" onclick="exportBackup()">Export Everything</button><label class="btn ghost">Choose Backup<input type="file" accept="application/json" class="hidden" onchange="previewImport(event)" /></label></div><div id="importPreview"></div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
   if(topic==='activity') return settingsModal('Activity Log', (state.activityLog.slice(0,25).map(a=>recordRow({title:a.action, meta:`${new Date(a.at).toLocaleString()} · ${ownerName(a.memberId)} · ${escapeHtml(a.detail)}`})).join('') || '<p class="muted">No activity yet.</p>') + `<div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
-  if(topic==='ai') return settingsModal('AI Connection', `<p class="muted">Compass v6.4 uses local summaries and what-if estimates in the browser. A secure AI proxy can be connected later.</p><p class="field-help">Do not place OpenAI or other API keys directly in a public browser app.</p><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
+  if(topic==='ai') return settingsModal('AI Connection', `<p class="muted">Compass uses local summaries and what-if estimates in the browser. A secure AI proxy can be connected later.</p><p class="field-help">Do not place OpenAI or other API keys directly in a public browser app.</p><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
   if(topic==='safety') return settingsModal('Data Safety', `<div class="summary-list">${recordRow({title:'App Version', meta:'Current Compass release installed on this device.', amount:'6.5.2'})}${recordRow({title:'Data Format', meta:'Your backup and local data format are up to date.', amount:'Current'})}${recordRow({title:'Storage Mode', meta:'This version stores data locally in your browser.', amount:'Local'})}${recordRow({title:'Import Guardrails', meta:'Size limits, schema migration, date validation, amount validation, and preview before commit.', amount:'On'})}</div><div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Close</button></div>`);
 }
 function saveThemePrivacyFromModal(){
@@ -911,8 +949,8 @@ function buildForm(type, item){
     <div class="form-grid"><label>Account Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Account Type<select name="type" required>${ACCOUNT_TYPES.map(t=>`<option value="${t}" ${accountType(item.type)===t?'selected':''}>${ACCOUNT_TYPE_LABEL[t]}</option>`).join('')}</select></label><label>Balance<input name="balance" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.balance ?? amountVal ?? '0')}" /></label><label>Include in Planning<select name="includeInPlanning"><option value="true" ${item.includeInPlanning!==false?'selected':''}>Yes</option><option value="false" ${item.includeInPlanning===false?'selected':''}>No</option></select></label>${commonOwner}</div>`);
   if (type === 'bill') return formWrap(`
     <div class="form-grid"><label>Bill Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Amount<input name="amount" inputmode="decimal" maxlength="10" required value="${escapeHtml(amountVal || '')}" /></label><label>Due Date<input name="dueDate" type="date" required value="${escapeHtml(item.dueDate || item.date || todayISO())}" /></label><label>Fixed / Non-fixed<select name="kind" required><option value="fixed" ${item.kind!=='non-fixed'?'selected':''}>Fixed</option><option value="non-fixed" ${item.kind==='non-fixed'?'selected':''}>Non-fixed</option></select></label><label>Recurring<select name="recurrence" required>${RECURRENCE.map(r=>`<option value="${r}" ${(item.recurrence||'one-time')===r?'selected':''}>${recurringLabel(r)}</option>`).join('')}</select></label><label>Category<select name="category" required>${BILL_CATEGORIES.map(c=>`<option value="${c}" ${(item.category||'other')===c?'selected':''}>${BILL_CATEGORY_LABEL[c]}</option>`).join('')}</select></label><label>Priority<select name="priority" required>${PRIORITIES.map(p=>`<option value="${p}" ${(item.priority||'important')===p?'selected':''}>${PRIORITY_LABEL[p]}</option>`).join('')}</select></label><label>Payment Type<select name="paymentType" required>${PAYMENT_TYPES.map(pt=>`<option value="${pt}" ${normalizePaymentType(item.paymentType)===pt?'selected':''}>${PAYMENT_LABEL[pt]}</option>`).join('')}</select></label>${commonOwner}</div>`);
-  if (type === 'bucket') return formWrap(`<div class="form-grid"><label>Bucket Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Bucket Frequency<select name="frequency" required>${BUCKET_FREQUENCIES.map(f=>`<option value="${f}" ${bucketFrequency(item.frequency)===f?'selected':''}>${BUCKET_FREQUENCY_LABEL[f]}</option>`).join('')}</select></label>${commonOwner}</div>`);
-  if (type === 'goal') return formWrap(`<div class="form-grid"><label>Goal Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Current Amount<input name="currentAmount" inputmode="decimal" maxlength="10" value="${escapeHtml(item.currentAmount ?? 0)}" /></label><label>Planned Contribution<input name="plannedContribution" inputmode="decimal" maxlength="10" value="${escapeHtml(item.plannedContribution ?? 0)}" /></label><label>Optional Due Date<input name="dueDate" type="date" value="${escapeHtml(item.dueDate || item.date || '')}" /></label>${commonOwner}</div>`);
+  if (type === 'bucket') return formWrap(`<div class="form-grid"><label>Bucket Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Bucket Frequency<select name="frequency" required>${BUCKET_FREQUENCIES.map(f=>`<option value="${f}" ${bucketFrequency(item.frequency)===f?'selected':''}>${BUCKET_FREQUENCY_HELP[f]}</option>`).join('')}</select></label>${commonOwner}</div>`);
+  if (type === 'goal') return formWrap(`<div class="form-grid"><label>Goal Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Current Amount<input name="currentAmount" inputmode="decimal" maxlength="10" value="${escapeHtml(item.currentAmount ?? 0)}" /></label><label>Planned Contribution<input name="plannedContribution" inputmode="decimal" maxlength="10" value="${escapeHtml(item.plannedContribution ?? 0)}" /><span class="field-help">How much you want to assign toward this goal each period.</span></label><label>Contribution Frequency<select name="contributionFrequency" required>${GOAL_CONTRIBUTION_FREQUENCIES.map(f=>`<option value="${f}" ${goalContributionFrequency(item.contributionFrequency)===f?'selected':''}>${GOAL_CONTRIBUTION_HELP[f]}</option>`).join('')}</select></label><label>Optional Due Date<input name="dueDate" type="date" value="${escapeHtml(item.dueDate || item.date || '')}" /></label>${commonOwner}</div>`);
   if (type === 'event') return formWrap(`<div class="form-grid"><label>Event Title<input name="title" maxlength="75" required value="${escapeHtml(item.title || item.name || '')}" /></label><label>Start Date<input name="startDate" type="date" required value="${escapeHtml(item.startDate || item.date || todayISO())}" /></label><label>End Date<input name="endDate" type="date" value="${escapeHtml(item.endDate || '')}" /></label>${commonOwner}<label>Savings Goal Link<select name="goalAction" id="goalActionSelect" onchange="toggleGoalActionFields()"><option value="create" ${!item.linkedGoalId?'selected':''}>Create new savings goal</option><option value="link" ${item.linkedGoalId?'selected':''}>Link existing savings goal</option></select></label><div id="linkGoalWrap" style="display:${item.linkedGoalId?'block':'none'}"><label>Existing Savings Goal<select name="linkedGoalId"><option value="">Select a goal</option>${state.goals.filter(g=>!g.deleted).map(g=>`<option value="${g.id}" ${item.linkedGoalId===g.id?'selected':''}>${escapeHtml(g.name)}</option>`).join('')}</select></label></div><div id="createGoalWrap"><label>New Savings Goal Name<input name="newGoalName" maxlength="75" value="${escapeHtml(item.title || item.name || '')}" /></label><label>Target Amount<input name="newGoalTarget" inputmode="decimal" maxlength="10" value="${escapeHtml(item.newGoalTarget ?? '')}" /></label></div></div>`);
   if (type === 'paycheck') return formWrap(`<div class="form-grid"><label>Paycheck Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Amount<input name="amount" inputmode="decimal" maxlength="10" required value="${escapeHtml(amountVal || '')}" /></label><label>Next Payday<input name="nextPayday" type="date" required value="${escapeHtml(item.nextPayday || item.date || todayISO())}" /></label><label>Frequency<select name="frequency" required>${RECURRENCE.map(r=>`<option value="${r}" ${(item.frequency||'biweekly')===r?'selected':''}>${recurringLabel(r)}</option>`).join('')}</select></label><label>Status<select name="status"><option value="expected" ${(item.status||'expected')==='expected'?'selected':''}>Expected</option><option value="received" ${item.status==='received'?'selected':''}>Received</option></select></label>${commonOwner}</div>`);
   return '';
@@ -946,15 +984,15 @@ function validateAndBuildRecord(type, d, id){
   let record={id, ownerId, deleted:false};
   if (type==='account') record = { ...record, name:requireText(d.name,'Account name'), type:accountType(d.type), balance:requireMoney(d.balance,'Balance'), includeInPlanning:d.includeInPlanning === 'true' };
   if (type==='bill') record = { ...record, name:requireText(d.name,'Bill name'), amount:requireMoney(d.amount,'Amount'), dueDate:requireDate(d.dueDate,'Due date'), kind:['fixed','non-fixed'].includes(d.kind)?d.kind:'fixed', recurrence:RECURRENCE.includes(d.recurrence)?d.recurrence:'one-time', category:BILL_CATEGORIES.includes(d.category)?d.category:'other', priority:PRIORITIES.includes(d.priority)?d.priority:'important', paymentType:normalizePaymentType(d.paymentType) };
-  if (type==='bucket') record = { ...record, name:requireText(d.name,'Bucket name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), frequency:bucketFrequency(d.frequency) };
-  if (type==='goal') record = { ...record, name:requireText(d.name,'Goal name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), currentAmount:optionalMoney(d.currentAmount,'Current amount'), plannedContribution:optionalMoney(d.plannedContribution,'Planned contribution'), dueDate:optionalDate(d.dueDate,'Due date'), linkedEventId:d.linkedGoalId||'' };
+  if (type==='bucket') record = { ...record, name:requireText(d.name,'Bucket name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), frequency:bucketFrequency(d.frequency), createdAt: record.createdAt || new Date().toISOString() };
+  if (type==='goal') record = { ...record, name:requireText(d.name,'Goal name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), currentAmount:optionalMoney(d.currentAmount,'Current amount'), plannedContribution:optionalMoney(d.plannedContribution,'Planned contribution'), contributionFrequency:goalContributionFrequency(d.contributionFrequency), dueDate:optionalDate(d.dueDate,'Due date'), linkedEventId:d.linkedGoalId||'', createdAt: record.createdAt || new Date().toISOString() };
   if (type==='event') { const start = requireDate(d.startDate,'Start date'); const end = optionalDate(d.endDate,'End date'); if(start && end && parseDate(end)<parseDate(start)) errors.push('End date cannot be before start date.'); if(d.goalAction==='link' && !d.linkedGoalId) errors.push('Select an existing savings goal.'); if(d.goalAction!=='link' && !requireText(d.newGoalName,'New savings goal name',LIMITS.title)){} if(d.goalAction!=='link' && !String(d.newGoalTarget||'').trim()) errors.push('New savings goal target amount is required.'); record = { ...record, title:requireText(d.title,'Event title',LIMITS.title), startDate:start, endDate:end, linkedGoalId:d.linkedGoalId || '', goalAction:d.goalAction||'create', newGoalName:d.newGoalName||'', newGoalTarget:d.newGoalTarget||'' }; }
   if (type==='paycheck') record = { ...record, name:requireText(d.name,'Paycheck name'), amount:requireMoney(d.amount,'Amount'), nextPayday:requireDate(d.nextPayday,'Next payday'), frequency:RECURRENCE.includes(d.frequency)?d.frequency:'biweekly', status:['expected','received'].includes(d.status)?d.status:'expected' };
   return errors.length ? {ok:false, errors} : {ok:true, record};
 }
 function promptLinkedGoal(eventRecord){
   if(eventRecord.goalAction==='link') return;
-  const goal={ id:uid(), name:truncate(eventRecord.newGoalName || eventRecord.title, LIMITS.title), targetAmount:parseMoney(eventRecord.newGoalTarget||'0').value||0, currentAmount:0, plannedContribution:0, dueDate:eventRecord.startDate, linkedEventId:eventRecord.id, ownerId:eventRecord.ownerId||OWNER_HOUSEHOLD, deleted:false, createdAt:new Date().toISOString() };
+  const goal={ id:uid(), name:truncate(eventRecord.newGoalName || eventRecord.title, LIMITS.title), targetAmount:parseMoney(eventRecord.newGoalTarget||'0').value||0, currentAmount:0, plannedContribution:0, contributionFrequency:'one-time', dueDate:eventRecord.startDate, linkedEventId:eventRecord.id, ownerId:eventRecord.ownerId||OWNER_HOUSEHOLD, deleted:false, createdAt:new Date().toISOString() };
   state.goals.push(goal);
   eventRecord.linkedGoalId = goal.id;
   const idx = state.events.findIndex(e=>e.id===eventRecord.id); if(idx>=0) state.events[idx].linkedGoalId = goal.id;
@@ -1107,8 +1145,100 @@ function undoBillPayment(paymentId){
     updateSessionStatuses(); logActivity('Paid bill undone', p.billName || 'Bill', { paymentId }); persist('Paid bill undone');
   }, 'Undo Paid');
 }
+
+function openMarkGoalSaved(goalId, occurrenceDate){
+  const goal = state.goals.find(g=>g.id===goalId && !g.deleted); if(!goal)return toast('Savings goal not found.');
+  const st = itemFundingStatus('goal', goal, occurrenceDate);
+  const accounts = state.accounts.filter(a=>!a.deleted);
+  const accountOptions = accounts.map(a=>`<option value="${a.id}">${escapeHtml(a.name)} · ${fmtMoney(a.balance)}</option>`).join('');
+  const suggested = Math.max(0, st.funded || st.unpaidTarget || goal.plannedContribution || 0);
+  showInfoModal('Move to Saved', `
+    <p><strong>${escapeHtml(goal.name)}</strong> · period ${formatDate(occurrenceDate)}</p>
+    <p class="muted">This confirms assigned money was actually saved or transferred. It closes the reservation and increases the goal progress.</p>
+    <div class="form-grid">
+      <label>Amount Saved<input id="goalSavedAmountInput" inputmode="decimal" maxlength="10" value="${Number(suggested||0).toFixed(2)}" oninput="previewGoalSavedBalance()" /></label>
+      <label>Saved Date<input id="goalSavedDateInput" type="date" value="${todayISO()}" /></label>
+      <label>From Account<select id="goalSavedFromAccountInput" onchange="previewGoalSavedBalance()"><option value="">Do not track source</option>${accountOptions}</select></label>
+      <label>Optional Destination Account<select id="goalSavedToAccountInput" onchange="previewGoalSavedBalance()"><option value="">Do not track destination</option>${accountOptions}</select></label>
+      <label class="checkline"><input id="goalSavedUpdateBalanceInput" type="checkbox" onchange="previewGoalSavedBalance()" /> Also update account balance(s)</label>
+    </div>
+    <div id="goalSavedBalanceHelp" class="field-help">Account balances will not be changed unless you check the box.</div>
+    <div class="button-row right"><button class="btn ghost" onclick="closeConfirm()">Cancel</button><button class="btn primary" onclick="finishMarkGoalSaved('${goalId}','${occurrenceDate}')">Move to Saved</button></div>`);
+  previewGoalSavedBalance();
+}
+function previewGoalSavedBalance(){
+  const amount = parseMoney(document.getElementById('goalSavedAmountInput')?.value || '0');
+  const from = state.accounts.find(a=>a.id===document.getElementById('goalSavedFromAccountInput')?.value);
+  const to = state.accounts.find(a=>a.id===document.getElementById('goalSavedToAccountInput')?.value);
+  const update = document.getElementById('goalSavedUpdateBalanceInput')?.checked === true;
+  const help = document.getElementById('goalSavedBalanceHelp'); if(!help)return;
+  if(!update){ help.textContent='Account balances will not be changed. This will only update the savings goal progress and close the reservation.'; return; }
+  if(!amount.ok){ help.textContent='Enter a valid saved amount.'; return; }
+  const pieces=[];
+  if(from) pieces.push(`${from.name}: ${fmtMoney(from.balance)} → ${fmtMoney(Number(from.balance||0)-amount.value)}`);
+  if(to) pieces.push(`${to.name}: ${fmtMoney(to.balance)} → ${fmtMoney(Number(to.balance||0)+amount.value)}`);
+  help.textContent = pieces.length ? pieces.join(' · ') : 'Choose a source and/or destination account to update balances.';
+}
+function finishMarkGoalSaved(goalId, occurrenceDate){
+  const goal = state.goals.find(g=>g.id===goalId && !g.deleted); if(!goal)return toast('Savings goal not found.');
+  const amountParsed = parseMoney(document.getElementById('goalSavedAmountInput')?.value || '0');
+  const savedDate = document.getElementById('goalSavedDateInput')?.value || todayISO();
+  const updateBalance = document.getElementById('goalSavedUpdateBalanceInput')?.checked === true;
+  if(!amountParsed.ok || amountParsed.value <= 0) return toast('Enter a valid saved amount.');
+  if(!isRealDate(savedDate)) return toast('Enter a real saved date.');
+  const remainingGoal = Math.max(0, Number(goal.targetAmount||0)-Number(goal.currentAmount||0));
+  if(amountParsed.value > remainingGoal + 0.005) return toast('Do not save more than the remaining goal balance.');
+  const fromAccountId = document.getElementById('goalSavedFromAccountInput')?.value || '';
+  const toAccountId = document.getElementById('goalSavedToAccountInput')?.value || '';
+  let fromAccountName='', toAccountName='';
+  if(updateBalance){
+    const from = state.accounts.find(a=>a.id===fromAccountId);
+    const to = state.accounts.find(a=>a.id===toAccountId);
+    if(!from && !to) return toast('Choose at least one account to update, or uncheck balance updates.');
+    if(from){ fromAccountName=from.name; from.balance = Math.round((Number(from.balance||0)-amountParsed.value)*100)/100; from.updatedAt=new Date().toISOString(); }
+    if(to){ toAccountName=to.name; to.balance = Math.round((Number(to.balance||0)+amountParsed.value)*100)/100; to.updatedAt=new Date().toISOString(); }
+  } else {
+    fromAccountName = state.accounts.find(a=>a.id===fromAccountId)?.name || '';
+    toAccountName = state.accounts.find(a=>a.id===toAccountId)?.name || '';
+  }
+  const saveId = uid();
+  const closedAllocationIds = closeActiveAllocationsForGoalSave(goalId, occurrenceDate, amountParsed.value, saveId);
+  goal.currentAmount = Math.min(Number(goal.targetAmount||0), Math.round((Number(goal.currentAmount||0)+amountParsed.value)*100)/100);
+  const save = { id:saveId, goalId, goalName:goal.name, occurrenceDate, amount:amountParsed.value, savedDate, fromAccountId, fromAccountName, toAccountId, toAccountName, accountBalanceUpdated:updateBalance, status:'active', closedAllocationIds, createdAt:new Date().toISOString() };
+  state.goalSaves.unshift(save);
+  updateSessionStatuses();
+  logActivity('Savings goal moved to saved', `${goal.name} saved ${fmtMoney(amountParsed.value)}`, { goalId, saveId });
+  closeConfirm();
+  persist('Savings goal moved to saved');
+}
+function closeActiveAllocationsForGoalSave(targetId, occurrenceDate, amount, saveId){
+  let remaining = Number(amount||0); const closed=[];
+  for (const a of state.fundingAllocations.filter(x=>(x.status||'active')==='active' && x.targetType==='goal' && x.targetId===targetId && (x.occurrenceDate||'')===(occurrenceDate||''))) {
+    if (remaining <= 0) break;
+    const amt = Number(a.amount||0);
+    if (amt <= remaining + 0.005) { a.status='closed-saved'; a.closedBySaveId=saveId; closed.push(a.id); remaining -= amt; }
+    else { a.amount = Math.round((amt - remaining)*100)/100; const split={...a, id:uid(), amount:Math.round(remaining*100)/100, status:'closed-saved', closedBySaveId:saveId, parentAllocationId:a.id}; state.fundingAllocations.push(split); closed.push(split.id); remaining=0; }
+  }
+  return closed;
+}
+function undoGoalSave(saveId){
+  const gsave = arr(state.goalSaves).find(x=>x.id===saveId && (x.status||'active')==='active'); if(!gsave)return toast('Saved goal record not found.');
+  confirmAction('Undo Saved Goal', `Undo saved status for “${gsave.goalName}”? This will reduce goal progress and reopen any reservation closed by the saved transfer${gsave.accountBalanceUpdated ? ' and reverse account balance updates' : ''}.`, ()=>{
+    gsave.status='reversed'; gsave.reversedAt=new Date().toISOString();
+    const goal=state.goals.find(g=>g.id===gsave.goalId); if(goal) goal.currentAmount = Math.max(0, Math.round((Number(goal.currentAmount||0)-Number(gsave.amount||0))*100)/100);
+    arr(gsave.closedAllocationIds).forEach(id=>{ const a=state.fundingAllocations.find(x=>x.id===id); if(!a)return; if(a.parentAllocationId){ const parent=state.fundingAllocations.find(x=>x.id===a.parentAllocationId); if(parent) parent.amount = Math.round((Number(parent.amount||0)+Number(a.amount||0))*100)/100; a.status='reversed'; } else { a.status='active'; delete a.closedBySaveId; } });
+    if(gsave.accountBalanceUpdated){ const from=state.accounts.find(a=>a.id===gsave.fromAccountId); const to=state.accounts.find(a=>a.id===gsave.toAccountId); if(from){ from.balance=Math.round((Number(from.balance||0)+Number(gsave.amount||0))*100)/100; from.updatedAt=new Date().toISOString(); } if(to){ to.balance=Math.round((Number(to.balance||0)-Number(gsave.amount||0))*100)/100; to.updatedAt=new Date().toISOString(); } }
+    updateSessionStatuses(); logActivity('Saved goal undone', gsave.goalName || 'Savings goal', { saveId }); persist('Saved goal undone');
+  }, 'Undo Saved');
+}
 function updateSessionStatuses(){
-  state.fundingSessions.forEach(s=>{ if((s.status||'active')==='reversed' || (s.status||'historical')==='historical') return; const related=state.fundingAllocations.filter(a=>a.sessionId===s.id); if(related.length && related.every(a=>(a.status||'active')!=='active')) s.status='closed-paid'; else if((s.status||'active')!=='active') s.status='active'; });
+  state.fundingSessions.forEach(s=>{
+    if((s.status||'active')==='reversed' || (s.status||'historical')==='historical') return;
+    const related=state.fundingAllocations.filter(a=>a.sessionId===s.id);
+    if(related.length && related.every(a=>(a.status||'active')!=='active')){
+      s.status = related.some(a=>(a.status||'')==='closed-saved') && !related.some(a=>(a.status||'')==='closed-paid') ? 'closed-saved' : 'closed-paid';
+    } else if((s.status||'active')!=='active') s.status='active';
+  });
 }
 function reverseFundingSession(sessionId){
   const session = state.fundingSessions.find(s=>s.id===sessionId); if(!session)return toast('Funding session not found.');
@@ -1167,7 +1297,7 @@ function migrateBackup(input){
   const warnings=[]; const base = defaultState();
   const src = input && typeof input==='object' ? input : {};
   const importedVersion = String(src.schemaVersion || 'legacy');
-  const oldFundingRules = importedVersion !== SCHEMA_VERSION;
+  const oldFundingRules = !['6.5.2.3','6.5.2.4'].includes(importedVersion);
   const st = { ...base, ...src };
   st.schemaVersion = SCHEMA_VERSION;
   st.household = src.household || { id:src.activeHouseholdId || base.household.id, name:src.householdName || 'My Household', createdAt:src.createdAt || new Date().toISOString() };
@@ -1177,13 +1307,14 @@ function migrateBackup(input){
   st.settings.fundedRules = { ...base.settings.fundedRules, ...(src.settings?.fundedRules || {}) };
   st.accounts = arr(src.accounts).map(a=>({ id:a.id||uid(), name:a.name||'Account', type:accountType(a.type), balance:a.balance ?? a.amount ?? 0, includeInPlanning:a.includeInPlanning ?? (!['investment','401k','hsa','other-asset','credit-card','loan-debt'].includes(accountType(a.type))), ownerId:a.ownerId||OWNER_HOUSEHOLD }));
   st.bills = arr(src.bills).map(b=>({ id:b.id||uid(), name:b.name||'Bill', amount:b.amount||0, dueDate:b.dueDate||b.date||todayISO(), kind:b.kind || (b.category==='variable'?'non-fixed':'fixed'), recurrence: normalizeRecurrence(b.recurrence || b.recurring || 'one-time'), priority: normalizePriority(b.priority || (b.category==='fixed'?'important':'flexible')), paymentType:normalizePaymentType(b.paymentType || b.payType || b.billPayType || 'unknown'), ownerId:b.ownerId||OWNER_HOUSEHOLD }));
-  st.buckets = arr(src.buckets).map(b=>({ id:b.id||uid(), name:b.name||'Bucket', targetAmount:b.targetAmount ?? b.amount ?? 0, frequency:bucketFrequency(b.frequency), ownerId:b.ownerId||OWNER_HOUSEHOLD }));
-  st.goals = arr(src.goals).map(g=>({ id:g.id||uid(), name:g.name||'Savings Goal', targetAmount:g.targetAmount ?? g.target ?? g.amount ?? 0, currentAmount:g.currentAmount ?? g.current ?? 0, plannedContribution:g.plannedContribution ?? g.contribution ?? 0, dueDate:g.dueDate||g.targetDate||'', linkedEventId:g.linkedEventId||'', ownerId:g.ownerId||OWNER_HOUSEHOLD }));
+  st.buckets = arr(src.buckets).map(b=>({ id:b.id||uid(), name:b.name||'Bucket', targetAmount:b.targetAmount ?? b.amount ?? 0, frequency:bucketFrequency(b.frequency), ownerId:b.ownerId||OWNER_HOUSEHOLD, createdAt:b.createdAt||new Date().toISOString() }));
+  st.goals = arr(src.goals).map(g=>({ id:g.id||uid(), name:g.name||'Savings Goal', targetAmount:g.targetAmount ?? g.target ?? g.amount ?? 0, currentAmount:g.currentAmount ?? g.current ?? 0, plannedContribution:g.plannedContribution ?? g.contribution ?? 0, contributionFrequency:goalContributionFrequency(g.contributionFrequency || g.frequency || 'monthly'), dueDate:g.dueDate||g.targetDate||'', linkedEventId:g.linkedEventId||'', ownerId:g.ownerId||OWNER_HOUSEHOLD, createdAt:g.createdAt||new Date().toISOString() }));
   st.events = arr(src.events).map(e=>({ id:e.id||uid(), title:e.title||e.name||'Event', startDate:e.startDate||e.date||todayISO(), endDate:e.endDate||'', linkedGoalId:e.linkedGoalId||'', ownerId:e.ownerId||OWNER_HOUSEHOLD }));
   st.paychecks = arr(src.paychecks).map(p=>({ id:p.id||uid(), name:p.name || p.person || 'Paycheck', amount:p.amount||0, nextPayday:p.nextPayday||p.nextDate||p.date||todayISO(), frequency: normalizeRecurrence(p.frequency || p.recurrence || p.recurring || 'biweekly'), status:p.status||'expected', balanceUpdatedOnReceive:p.balanceUpdatedOnReceive===true, receivedAccountId:p.receivedAccountId||'', receivedOccurrenceDate:p.receivedOccurrenceDate||p.nextPayday||'', actualReceivedAmount:p.actualReceivedAmount||'', ownerId:p.ownerId||OWNER_HOUSEHOLD }));
   st.fundingSessions = arr(src.fundingSessions).map(s=>({ ...s, status: oldFundingRules ? 'historical' : (s.status || 'active') }));
   st.fundingAllocations = arr(src.fundingAllocations).map(a=>({ ...a, status: oldFundingRules ? 'historical' : (a.status || 'active') }));
   st.billPayments = arr(src.billPayments).map(p=>({ ...p, status:p.status || 'active' }));
+  st.goalSaves = arr(src.goalSaves).map(g=>({ ...g, status:g.status || 'active' }));
   if(oldFundingRules && (st.fundingSessions.length || st.fundingAllocations.length)) warnings.push('This backup was created before Assign Money reservations were added. Existing funding history was imported as history only. New funding sessions will reserve money going forward.');
   st.activityLog = arr(src.activityLog);
   if(src.safeToSpend !== undefined || src.plan) warnings.push('Legacy plan/safe-to-spend fields were ignored because Compass v6 recalculates planning results.');
@@ -1195,17 +1326,20 @@ function normalizePriority(v){ v=String(v||'').toLowerCase(); if(PRIORITIES.incl
 function cleanState(input){
   const errors=[], warnings=[]; const st = { ...defaultState(), ...input };
   const checkCount=(name)=>{ if(!Array.isArray(st[name])) { st[name]=[]; warnings.push(`${name} was not an array and was reset.`); } if(st[name].length > LIMITS.recordCounts[name]) errors.push(`${name} exceeds the supported record count.`); };
-  ['members','accounts','bills','buckets','goals','events','paychecks','fundingSessions','fundingAllocations','billPayments'].forEach(checkCount);
+  ['members','accounts','bills','buckets','goals','events','paychecks','fundingSessions','fundingAllocations','billPayments','goalSaves'].forEach(checkCount);
   st.household = { id:truncate(st.household?.id || uid(),80), name:truncate(st.household?.name || 'My Household',LIMITS.householdName), createdAt:st.household?.createdAt || new Date().toISOString() };
   st.members = st.members.map(m=>({ id:truncate(m.id||uid(),80), name:truncate(m.name||'Member',LIMITS.memberName), system:m.id===OWNER_HOUSEHOLD || m.system===true })).filter(m=>m.name);
   if(!st.members.some(m=>m.id===OWNER_HOUSEHOLD)) st.members.unshift({id:OWNER_HOUSEHOLD,name:'Household',system:true});
+  const visibleMemberNames = st.members.filter(m=>!m.system).map(m=>normalizeKey(m.name));
+  const oldStarterNames = ['nick','danielle'];
+  if(visibleMemberNames.length && visibleMemberNames.every(n=>oldStarterNames.includes(n))){ warnings.push('Old starter household members were removed. Add your own household members from Settings.'); st.members = st.members.filter(m=>m.system); }
   const validOwner=(id)=>st.members.some(m=>m.id===id)?id:OWNER_HOUSEHOLD;
   const num=(v,label)=>{ const p=parseMoney(String(v??0)); if(!p.ok){ warnings.push(`${label} had an invalid amount and was set to 0.`); return 0;} return p.value; };
   const date=(v,label,required=true)=>{ if(!v&&!required)return ''; if(!isRealDate(v)){ warnings.push(`${label} had an invalid date and was set to today.`); return todayISO(); } return v; };
   st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), type:accountType(a.type), balance:num(a.balance,'Account balance'), includeInPlanning:a.includeInPlanning!==false, ownerId:validOwner(a.ownerId) }));
   st.bills = st.bills.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bill',LIMITS.name), amount:num(b.amount,'Bill amount'), dueDate:date(b.dueDate,'Bill due date'), kind:b.kind==='non-fixed'?'non-fixed':'fixed', recurrence:normalizeRecurrence(b.recurrence), category:BILL_CATEGORIES.includes(b.category)?b.category:'other', priority:normalizePriority(b.priority), paymentType:normalizePaymentType(b.paymentType), ownerId:validOwner(b.ownerId) }));
-  st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), frequency:bucketFrequency(b.frequency), ownerId:validOwner(b.ownerId) }));
-  st.goals = st.goals.map(g=>({ id:g.id||uid(), name:truncate(g.name||'Savings Goal',LIMITS.name), targetAmount:num(g.targetAmount,'Goal target'), currentAmount:num(g.currentAmount,'Goal current'), plannedContribution:num(g.plannedContribution,'Goal contribution'), dueDate:g.dueDate?date(g.dueDate,'Goal due date',false):'', linkedEventId:g.linkedEventId||'', ownerId:validOwner(g.ownerId) }));
+  st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), frequency:bucketFrequency(b.frequency), ownerId:validOwner(b.ownerId), createdAt:b.createdAt||new Date().toISOString() }));
+  st.goals = st.goals.map(g=>({ id:g.id||uid(), name:truncate(g.name||'Savings Goal',LIMITS.name), targetAmount:num(g.targetAmount,'Goal target'), currentAmount:num(g.currentAmount,'Goal current'), plannedContribution:num(g.plannedContribution,'Goal contribution'), contributionFrequency:goalContributionFrequency(g.contributionFrequency), dueDate:g.dueDate?date(g.dueDate,'Goal due date',false):'', linkedEventId:g.linkedEventId||'', ownerId:validOwner(g.ownerId), createdAt:g.createdAt||new Date().toISOString() }));
   st.events = st.events.map(e=>({ id:e.id||uid(), title:truncate(e.title||'Event',LIMITS.title), startDate:date(e.startDate,'Event start date'), endDate:e.endDate?date(e.endDate,'Event end date',false):'', linkedGoalId:e.linkedGoalId||'', ownerId:validOwner(e.ownerId) }));
   st.paychecks = st.paychecks.map(p=>({ id:p.id||uid(), name:truncate(p.name||'Paycheck',LIMITS.name), amount:num(p.amount,'Paycheck amount'), nextPayday:date(p.nextPayday,'Paycheck date'), frequency:RECURRENCE.includes(p.frequency)?p.frequency:'biweekly', status:p.status==='received'?'received':'expected', balanceUpdatedOnReceive:p.balanceUpdatedOnReceive===true, receivedAccountId:p.receivedAccountId||'', receivedOccurrenceDate:p.receivedOccurrenceDate||p.nextPayday||'', actualReceivedAmount:p.actualReceivedAmount||'', ownerId:validOwner(p.ownerId) }));
   st.settings = { ...defaultState().settings, ...(st.settings||{}) };
@@ -1219,11 +1353,12 @@ function cleanState(input){
   st.settings.calendarColors.recordType = { ...defaultState().settings.calendarColors.recordType, ...(st.settings.calendarColors.recordType||{}) };
   st.settings.calendarColors.paymentType = { ...defaultState().settings.calendarColors.paymentType, ...(st.settings.calendarColors.paymentType||{}) };
   st.settings.calendarColors.owner = { ...(st.settings.calendarColors.owner||{}) };
-  const validStatus = v => ['active','reversed','closed-paid','historical'].includes(String(v||'')) ? String(v) : 'historical';
+  const validStatus = v => ['active','reversed','closed-paid','closed-saved','historical'].includes(String(v||'')) ? String(v) : 'historical';
   st.fundingSessions = arr(st.fundingSessions).map(s=>({ id:s.id||uid(), status:validStatus(s.status), at:s.at||s.createdAt||new Date().toISOString(), memberId:s.memberId||OWNER_HOUSEHOLD, paycheckId:s.paycheckId||'', paycheckName:truncate(s.paycheckName||'Funding Session',LIMITS.name), paycheckAmount:num(s.paycheckAmount||0,'Funding source amount'), planningBalance:num(s.planningBalance||0,'Funding planning balance'), poolMode:s.poolMode||'', fundingSource:s.fundingSource||'', paycheckIncludedInBalance:s.paycheckIncludedInBalance!==false, allocations:arr(s.allocations).map(a=>({ targetType:a.targetType||'bill', targetId:a.targetId||'', occurrenceDate:a.occurrenceDate||'', targetName:truncate(a.targetName||'Assigned item',LIMITS.name), amount:num(a.amount||0,'Funding allocation') })) }));
   const sessionIds = new Set(st.fundingSessions.map(s=>s.id));
-  st.fundingAllocations = arr(st.fundingAllocations).map(a=>({ id:a.id||uid(), sessionId:a.sessionId||'', status:validStatus(a.status), at:a.at||new Date().toISOString(), targetType:a.targetType||'bill', targetId:a.targetId||'', occurrenceDate:a.occurrenceDate||'', targetName:truncate(a.targetName||'Assigned item',LIMITS.name), amount:num(a.amount||0,'Funding allocation'), closedByPaymentId:a.closedByPaymentId||'', parentAllocationId:a.parentAllocationId||'' })).filter(a=>!a.sessionId || sessionIds.has(a.sessionId));
+  st.fundingAllocations = arr(st.fundingAllocations).map(a=>({ id:a.id||uid(), sessionId:a.sessionId||'', status:validStatus(a.status), at:a.at||new Date().toISOString(), targetType:a.targetType||'bill', targetId:a.targetId||'', occurrenceDate:a.occurrenceDate||'', targetName:truncate(a.targetName||'Assigned item',LIMITS.name), amount:num(a.amount||0,'Funding allocation'), closedByPaymentId:a.closedByPaymentId||'', closedBySaveId:a.closedBySaveId||'', parentAllocationId:a.parentAllocationId||'' })).filter(a=>!a.sessionId || sessionIds.has(a.sessionId));
   st.billPayments = arr(st.billPayments).map(p=>({ id:p.id||uid(), billId:p.billId||'', billName:truncate(p.billName||'Bill',LIMITS.name), occurrenceDate:date(p.occurrenceDate||todayISO(),'Paid bill occurrence date'), amount:num(p.amount||0,'Paid bill amount'), paidDate:date(p.paidDate||todayISO(),'Payment date'), accountId:p.accountId||'', accountName:truncate(p.accountName||'',LIMITS.name), accountBalanceUpdated:p.accountBalanceUpdated===true, status:['active','reversed'].includes(p.status)?p.status:'active', closedAllocationIds:arr(p.closedAllocationIds), createdAt:p.createdAt||new Date().toISOString(), reversedAt:p.reversedAt||'' }));
+  st.goalSaves = arr(st.goalSaves).map(g=>({ id:g.id||uid(), goalId:g.goalId||'', goalName:truncate(g.goalName||'Savings Goal',LIMITS.name), occurrenceDate:date(g.occurrenceDate||todayISO(),'Saved goal period'), amount:num(g.amount||0,'Saved goal amount'), savedDate:date(g.savedDate||todayISO(),'Saved goal date'), fromAccountId:g.fromAccountId||'', fromAccountName:truncate(g.fromAccountName||'',LIMITS.name), toAccountId:g.toAccountId||'', toAccountName:truncate(g.toAccountName||'',LIMITS.name), accountBalanceUpdated:g.accountBalanceUpdated===true, status:['active','reversed'].includes(g.status)?g.status:'active', closedAllocationIds:arr(g.closedAllocationIds), createdAt:g.createdAt||new Date().toISOString(), reversedAt:g.reversedAt||'' }));
   st.schemaVersion = SCHEMA_VERSION;
   return { ok:errors.length===0, errors, warnings, state:st };
 }
@@ -1250,7 +1385,7 @@ function closeDrawer(){ document.getElementById('sideDrawer').classList.remove('
 function toggleGoalActionFields(){ const sel=document.getElementById('goalActionSelect'); const link=document.getElementById('linkGoalWrap'); const create=document.getElementById('createGoalWrap'); if(!sel||!link||!create) return; const isLink = sel.value==='link'; link.style.display=isLink?'block':'none'; create.style.display=isLink?'none':'block'; }
 window.openRecord = openRecord; window.deleteRecord = deleteRecord; window.undoDelete = undoDelete; window.markPaycheckReceived = markPaycheckReceived; window.previewReceivedBalance = previewReceivedBalance; window.finishPaycheckReceivedFlow = finishPaycheckReceivedFlow;
 window.navigate = navigate; window.moveMonth = moveMonth; window.showMonthlyOutlook = showMonthlyOutlook; window.openCalendarRecord = openCalendarRecord; window.showFundedDetails = showFundedDetails;
-window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding; window.openMarkBillPaid = openMarkBillPaid; window.previewPaidBalance = previewPaidBalance; window.finishMarkBillPaid = finishMarkBillPaid; window.undoBillPayment = undoBillPayment; window.reverseFundingSession = reverseFundingSession;
+window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding; window.openMarkBillPaid = openMarkBillPaid; window.previewPaidBalance = previewPaidBalance; window.finishMarkBillPaid = finishMarkBillPaid; window.undoBillPayment = undoBillPayment; window.reverseFundingSession = reverseFundingSession; window.openMarkGoalSaved = openMarkGoalSaved; window.previewGoalSavedBalance = previewGoalSavedBalance; window.finishMarkGoalSaved = finishMarkGoalSaved; window.undoGoalSave = undoGoalSave;
 window.runSimulator = runSimulator; window.setAssignSource = setAssignSource; window.refreshInsights = refreshInsights; window.saveThemePrivacy = saveThemePrivacy; window.explainAvailableToPlan = explainAvailableToPlan; window.dismissThemePrompt = dismissThemePrompt; window.openThemeSettingsFromPrompt = openThemeSettingsFromPrompt; window.convertSimulator = convertSimulator; window.continueConvertSimulator = continueConvertSimulator; window.runSimulatorAI = runSimulatorAI;
 window.savePlanningRules = savePlanningRules; window.saveCalendarDisplaySettings = saveCalendarDisplaySettings; window.openSettingsTopic = openSettingsTopic; window.saveThemePrivacyFromModal = saveThemePrivacyFromModal; window.savePlanningRulesFromModal = savePlanningRulesFromModal; window.saveCalendarDisplaySettingsFromModal = saveCalendarDisplaySettingsFromModal; window.saveHouseholdNameFromModal = saveHouseholdNameFromModal; window.addMemberFromModal = addMemberFromModal; window.saveHouseholdName = saveHouseholdName; window.addMember = addMember; window.deleteMember = deleteMember; window.deleteHousehold = deleteHousehold;
 window.exportBackup = exportBackup; window.previewImport = previewImport; window.commitImport = commitImport; window.closeDialog = closeDialog; window.closeConfirm = closeConfirm; window.persist = persist;
