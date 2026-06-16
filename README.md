@@ -1,4 +1,4 @@
-# Compass v6.5.2.4
+# Compass v6.5.2.5
 
 Starter household + bucket/savings goal logic patch.
 
@@ -16,3 +16,11 @@ Starter household + bucket/savings goal logic patch.
 
 ## Deploy
 Upload `index.html`, `app.js`, `styles.css`, and `README.md` to the repo root. No asset folder is required for this patch.
+
+
+## v6.5.2.5
+
+- De-duplicates Funded Through bucket/goal cycles so weekly/monthly items do not repeat for the same period.
+- Shows clearer Funded Through cycle labels like “Week of …” and “Monthly bucket.”
+- Locks Include in Planning off for Credit Card and Loan/Debt accounts with a helper note.
+- Keeps Checking, Savings, Cash, Investment, Retirement, HSA, and Other Asset eligible for Available to Plan.

@@ -114,3 +114,8 @@ body{background:radial-gradient(circle at 12% 0%, rgba(191,135,56,.18), transpar
 .wealth-grid .soft-box strong,.row > div:last-child strong,.dash-card strong,.available-pill strong{max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.08}
 .row > div:last-child{min-width:0;text-align:right}
 @media(max-width:760px){.row > div:last-child{text-align:left}.wealth-grid .soft-box strong{font-size:20px}.available-pill{max-width:48vw}.available-pill strong{font-size:13px}}
+
+/* v6.5.2.5 debt account planning lock */
+.planning-disabled{opacity:.62}
+.planning-disabled select{cursor:not-allowed;background:rgba(255,255,255,.08);color:var(--muted)}
+.planning-disabled small{display:block;margin-top:6px;line-height:1.35}
