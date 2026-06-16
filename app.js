@@ -1,7 +1,7 @@
-/* Compass v6.5.2.4 - Starter household, bucket cycles, and savings goal save workflow */
+/* Compass v6.5.2.5 - Funded Through de-dupe and debt account planning lock */
 const STORAGE_KEY = 'compass_v6_state';
 const HAD_EXISTING_STATE = !!localStorage.getItem(STORAGE_KEY);
-const SCHEMA_VERSION = '6.5.2.4';
+const SCHEMA_VERSION = '6.5.2.5';
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const LIMITS = {
   name: 60, title: 75, notes: 500, householdName: 60, memberName: 40,
@@ -142,6 +142,8 @@ function availableToPlan(extraState=state){ return unassignedBalance(extraState)
 function planningBreakdown(extraState=state){ const included = planningBalance(extraState); const assigned = activeAssignedTotal(extraState); return { included, assigned, unassigned: included - assigned }; }
 function accountType(v){ const raw=String(v||'').toLowerCase().trim(); const aliases={saving:'savings',retirement:'401k','401(k)':'401k','401k-retirement':'401k','credit card':'credit-card',credit:'credit-card',loan:'loan-debt',debt:'loan-debt',asset:'other-asset'}; const key=aliases[raw] || raw; return ACCOUNT_TYPES.includes(key) ? key : 'checking'; }
 function isDebtAccount(a){ return DEBT_TYPES.includes(accountType(a.type)); }
+function canIncludeAccountTypeInPlanning(type){ return !DEBT_TYPES.includes(accountType(type)); }
+function normalizeIncludeInPlanning(type, value){ return canIncludeAccountTypeInPlanning(type) ? value !== false : false; }
 function assetsTotal(){ return state.accounts.filter(a=>!a.deleted && ASSET_TYPES.includes(accountType(a.type))).reduce((sum,a)=>sum+Number(a.balance||0),0); }
 function debtsTotal(){ return state.accounts.filter(a=>!a.deleted && isDebtAccount(a)).reduce((sum,a)=>sum+Math.abs(Number(a.balance||0)),0); }
 function netPosition(){ return assetsTotal() - debtsTotal(); }
@@ -264,35 +266,58 @@ function assignPoolForPaycheck(paycheckOccurrence){
   return { total:base + (addPaycheck ? Number(paycheckOccurrence.amount||0) : 0), base, paycheckAmount:Number(paycheckOccurrence?.amount||0), addPaycheck, mode:addPaycheck?'balancePlusPaycheck':'updatedBalanceOnly' };
 }
 function shouldIncludeBill(b, rules=state.settings.fundedRules){ return !!rules[b.priority]; }
+function timelineCycleLabel(ev){
+  if(ev.type==='bucket'){
+    if(ev.cycleType==='monthly') return `${monthName(ev.date)} ${parseDate(ev.date).getFullYear()} · monthly bucket`;
+    if(ev.cycleType==='weekly') return `Week of ${formatDate(ev.date)} · weekly bucket`;
+    if(ev.cycleType==='paycheck') return `${formatDate(ev.date)} · per-paycheck bucket`;
+    if(ev.cycleType==='one-time') return `${formatDate(ev.date)} · one-time bucket`;
+  }
+  if(ev.type==='goal'){
+    if(ev.cycleType==='monthly') return `${monthName(ev.date)} ${parseDate(ev.date).getFullYear()} · monthly savings contribution`;
+    if(ev.cycleType==='paycheck') return `${formatDate(ev.date)} · per-paycheck savings contribution`;
+    if(ev.cycleType==='one-time') return `${formatDate(ev.date)} · one-time savings contribution`;
+  }
+  return `${formatDate(ev.date)} · ${ev.type}`;
+}
+function eventDedupeKey(ev){ return [ev.type, ev.id || ev.label, ev.date, ev.cycleType || ''].join('|'); }
+function pushTimelineEvent(events, seen, ev){
+  const key = eventDedupeKey(ev);
+  if(seen.has(key)) return;
+  seen.add(key);
+  events.push(ev);
+}
 function buildTimeline({ includeExpectedIncome=false, extraSpend=0, days=120 }={}){
   const start = todayISO(); const end = iso(addDays(parseDate(start), days));
-  const events = [];
-  if (includeExpectedIncome) upcomingPaychecks(days).forEach(p => events.push({ date:p.occurrenceDate, amount:Number(p.amount||0), label:`${p.name} paycheck`, type:'income' }));
+  const events = []; const seen = new Set();
+  if (includeExpectedIncome) upcomingPaychecks(days).forEach(p => pushTimelineEvent(events, seen, { date:p.occurrenceDate, amount:Number(p.amount||0), label:`${p.name} paycheck`, type:'income', id:p.id, cycleType:'income' }));
   expandRecurring(state.bills, start, end, 'dueDate').filter(b=>shouldIncludeBill(b)).forEach(b => {
     const status = itemFundingStatus('bill', b, b.occurrenceDate);
     const remaining = Math.max(0, Number(b.amount||0) - status.funded);
-    if (remaining > 0) events.push({ date:b.occurrenceDate, amount:-remaining, label:b.name, type:'bill', priority:b.priority });
+    if (remaining > 0) pushTimelineEvent(events, seen, { date:b.occurrenceDate, amount:-remaining, label:b.name, type:'bill', id:b.id, priority:b.priority, cycleType:'bill' });
   });
   const payDates = [start, ...upcomingPaychecks(days).map(p=>p.occurrenceDate)].filter((v,i,a)=>a.indexOf(v)===i).sort();
   if (state.settings.fundedRules.buckets) {
     for (const date of payDates) state.buckets.filter(b=>!b.deleted).forEach(b=>{
+      const cycleType = bucketFrequency(b.frequency);
       const occurrenceDate = bucketOccurrenceDate(b, date);
       const status = itemFundingStatus('bucket', b, occurrenceDate);
       const remaining = Math.max(0, Number(b.targetAmount||0) - status.funded);
-      if (remaining > 0) events.push({ date:occurrenceDate, amount:-remaining, label:b.name, type:'bucket' });
+      if (remaining > 0) pushTimelineEvent(events, seen, { date:occurrenceDate, amount:-remaining, label:b.name, type:'bucket', id:b.id, cycleType });
     });
   }
   if (state.settings.fundedRules.goals) {
     for (const date of payDates) state.goals.filter(g=>!g.deleted && Number(g.plannedContribution||0)>0).forEach(g=>{
+      const cycleType = goalContributionFrequency(g.contributionFrequency);
       const occurrenceDate = goalOccurrenceDate(g, date);
       const target = goalContributionAmount(g);
       const status = itemFundingStatus('goal', g, occurrenceDate);
       const remaining = Math.max(0, target - status.saved - status.funded);
-      if (remaining > 0) events.push({ date:occurrenceDate, amount:-remaining, label:g.name, type:'goal' });
+      if (remaining > 0) pushTimelineEvent(events, seen, { date:occurrenceDate, amount:-remaining, label:g.name, type:'goal', id:g.id, cycleType });
     });
   }
-  if (extraSpend > 0) events.push({ date:start, amount:-extraSpend, label:'Simulator expense', type:'simulator' });
-  return events.sort((a,b)=> a.date.localeCompare(b.date) || (b.amount-a.amount));
+  if (extraSpend > 0) pushTimelineEvent(events, seen, { date:start, amount:-extraSpend, label:'Simulator expense', type:'simulator', id:'simulator', cycleType:'simulator' });
+  return events.sort((a,b)=> a.date.localeCompare(b.date) || (b.amount-a.amount) || String(a.label).localeCompare(String(b.label)));
 }
 function calculateFundedThrough(opts={}){
   const days = Number(state.settings.lookAheadDays || 120);
@@ -560,7 +585,7 @@ function showFundedDetails(projected=false){
     <p><strong>${formatDate(result.throughDate)}</strong></p>
     ${result.nextUnfunded ? `<p class="status-pill danger">Next unfunded: ${escapeHtml(result.nextUnfunded.label)} · short ${fmtMoney(result.nextUnfunded.shortfall)}</p>` : `<p class="status-pill good">All included items covered in the planning window.</p>`}
     <h3>Upcoming items included</h3>
-    ${events.map(e=>recordRow({title:e.label, meta:`${formatDate(e.date)} · ${e.type}`, amount:e.amount>=0?`+${fmtMoney(e.amount)}`:fmtMoney(Math.abs(e.amount))})).join('') || '<p class="muted">No included items found.</p>'}
+    ${events.map(e=>recordRow({title:e.label, meta:timelineCycleLabel(e), amount:e.amount>=0?`+${fmtMoney(e.amount)}`:fmtMoney(Math.abs(e.amount))})).join('') || '<p class="muted">No included items found.</p>'}
   `);
 }
 function renderAccounts(){
@@ -946,7 +971,7 @@ function buildForm(type, item){
   const nameVal = escapeHtml(item.name || item.title || '');
   const amountVal = item.amount ?? item.targetAmount ?? '';
   if (type === 'account') return formWrap(`
-    <div class="form-grid"><label>Account Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Account Type<select name="type" required>${ACCOUNT_TYPES.map(t=>`<option value="${t}" ${accountType(item.type)===t?'selected':''}>${ACCOUNT_TYPE_LABEL[t]}</option>`).join('')}</select></label><label>Balance<input name="balance" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.balance ?? amountVal ?? '0')}" /></label><label>Include in Planning<select name="includeInPlanning"><option value="true" ${item.includeInPlanning!==false?'selected':''}>Yes</option><option value="false" ${item.includeInPlanning===false?'selected':''}>No</option></select></label>${commonOwner}</div>`);
+    <div class="form-grid"><label>Account Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Account Type<select name="type" required onchange="syncAccountPlanningField(this.value)">${ACCOUNT_TYPES.map(t=>`<option value="${t}" ${accountType(item.type)===t?'selected':''}>${ACCOUNT_TYPE_LABEL[t]}</option>`).join('')}</select></label><label>Balance<input name="balance" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.balance ?? amountVal ?? '0')}" /></label><label id="includePlanningWrap" class="${canIncludeAccountTypeInPlanning(accountType(item.type))?'':'planning-disabled'}">Include in Planning<select name="includeInPlanning" ${canIncludeAccountTypeInPlanning(accountType(item.type))?'':'disabled'}><option value="true" ${normalizeIncludeInPlanning(accountType(item.type), item.includeInPlanning)!==false?'selected':''}>Yes</option><option value="false" ${normalizeIncludeInPlanning(accountType(item.type), item.includeInPlanning)===false?'selected':''}>No</option></select><small id="debtPlanningNote" class="muted" style="display:${canIncludeAccountTypeInPlanning(accountType(item.type))?'none':'block'}">Debt accounts are tracked in 360 Wealth View and do not affect Available to Plan.</small></label>${commonOwner}</div>`);
   if (type === 'bill') return formWrap(`
     <div class="form-grid"><label>Bill Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Amount<input name="amount" inputmode="decimal" maxlength="10" required value="${escapeHtml(amountVal || '')}" /></label><label>Due Date<input name="dueDate" type="date" required value="${escapeHtml(item.dueDate || item.date || todayISO())}" /></label><label>Fixed / Non-fixed<select name="kind" required><option value="fixed" ${item.kind!=='non-fixed'?'selected':''}>Fixed</option><option value="non-fixed" ${item.kind==='non-fixed'?'selected':''}>Non-fixed</option></select></label><label>Recurring<select name="recurrence" required>${RECURRENCE.map(r=>`<option value="${r}" ${(item.recurrence||'one-time')===r?'selected':''}>${recurringLabel(r)}</option>`).join('')}</select></label><label>Category<select name="category" required>${BILL_CATEGORIES.map(c=>`<option value="${c}" ${(item.category||'other')===c?'selected':''}>${BILL_CATEGORY_LABEL[c]}</option>`).join('')}</select></label><label>Priority<select name="priority" required>${PRIORITIES.map(p=>`<option value="${p}" ${(item.priority||'important')===p?'selected':''}>${PRIORITY_LABEL[p]}</option>`).join('')}</select></label><label>Payment Type<select name="paymentType" required>${PAYMENT_TYPES.map(pt=>`<option value="${pt}" ${normalizePaymentType(item.paymentType)===pt?'selected':''}>${PAYMENT_LABEL[pt]}</option>`).join('')}</select></label>${commonOwner}</div>`);
   if (type === 'bucket') return formWrap(`<div class="form-grid"><label>Bucket Name<input name="name" maxlength="60" required value="${nameVal}" /></label><label>Target Amount<input name="targetAmount" inputmode="decimal" maxlength="10" required value="${escapeHtml(item.targetAmount ?? item.amount ?? '')}" /></label><label>Bucket Frequency<select name="frequency" required>${BUCKET_FREQUENCIES.map(f=>`<option value="${f}" ${bucketFrequency(item.frequency)===f?'selected':''}>${BUCKET_FREQUENCY_HELP[f]}</option>`).join('')}</select></label>${commonOwner}</div>`);
@@ -982,7 +1007,7 @@ function validateAndBuildRecord(type, d, id){
   const requireDate = (val, label) => { if(!isRealDate(val)) errors.push(`${label} must be a real calendar date.`); return val; };
   const optionalDate = (val, label) => { if(!val) return ''; if(!isRealDate(val)) errors.push(`${label} must be a real calendar date.`); return val; };
   let record={id, ownerId, deleted:false};
-  if (type==='account') record = { ...record, name:requireText(d.name,'Account name'), type:accountType(d.type), balance:requireMoney(d.balance,'Balance'), includeInPlanning:d.includeInPlanning === 'true' };
+  if (type==='account') { const acctType = accountType(d.type); record = { ...record, name:requireText(d.name,'Account name'), type:acctType, balance:requireMoney(d.balance,'Balance'), includeInPlanning:normalizeIncludeInPlanning(acctType, d.includeInPlanning === 'true') }; }
   if (type==='bill') record = { ...record, name:requireText(d.name,'Bill name'), amount:requireMoney(d.amount,'Amount'), dueDate:requireDate(d.dueDate,'Due date'), kind:['fixed','non-fixed'].includes(d.kind)?d.kind:'fixed', recurrence:RECURRENCE.includes(d.recurrence)?d.recurrence:'one-time', category:BILL_CATEGORIES.includes(d.category)?d.category:'other', priority:PRIORITIES.includes(d.priority)?d.priority:'important', paymentType:normalizePaymentType(d.paymentType) };
   if (type==='bucket') record = { ...record, name:requireText(d.name,'Bucket name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), frequency:bucketFrequency(d.frequency), createdAt: record.createdAt || new Date().toISOString() };
   if (type==='goal') record = { ...record, name:requireText(d.name,'Goal name'), targetAmount:requireMoney(d.targetAmount,'Target amount'), currentAmount:optionalMoney(d.currentAmount,'Current amount'), plannedContribution:optionalMoney(d.plannedContribution,'Planned contribution'), contributionFrequency:goalContributionFrequency(d.contributionFrequency), dueDate:optionalDate(d.dueDate,'Due date'), linkedEventId:d.linkedGoalId||'', createdAt: record.createdAt || new Date().toISOString() };
@@ -1297,7 +1322,7 @@ function migrateBackup(input){
   const warnings=[]; const base = defaultState();
   const src = input && typeof input==='object' ? input : {};
   const importedVersion = String(src.schemaVersion || 'legacy');
-  const oldFundingRules = !['6.5.2.3','6.5.2.4'].includes(importedVersion);
+  const oldFundingRules = !['6.5.2.3','6.5.2.4','6.5.2.5'].includes(importedVersion);
   const st = { ...base, ...src };
   st.schemaVersion = SCHEMA_VERSION;
   st.household = src.household || { id:src.activeHouseholdId || base.household.id, name:src.householdName || 'My Household', createdAt:src.createdAt || new Date().toISOString() };
@@ -1305,7 +1330,7 @@ function migrateBackup(input){
   if(!st.members.some(m=>m.id===OWNER_HOUSEHOLD)) st.members.unshift({id:OWNER_HOUSEHOLD,name:'Household',system:true});
   st.settings = { ...base.settings, ...(src.settings || {}), theme: src.theme || src.settings?.theme || base.settings.theme, aiEndpoint:src.aiEndpoint || src.settings?.aiEndpoint || '' };
   st.settings.fundedRules = { ...base.settings.fundedRules, ...(src.settings?.fundedRules || {}) };
-  st.accounts = arr(src.accounts).map(a=>({ id:a.id||uid(), name:a.name||'Account', type:accountType(a.type), balance:a.balance ?? a.amount ?? 0, includeInPlanning:a.includeInPlanning ?? (!['investment','401k','hsa','other-asset','credit-card','loan-debt'].includes(accountType(a.type))), ownerId:a.ownerId||OWNER_HOUSEHOLD }));
+  st.accounts = arr(src.accounts).map(a=>({ id:a.id||uid(), name:a.name||'Account', type:accountType(a.type), balance:a.balance ?? a.amount ?? 0, includeInPlanning:normalizeIncludeInPlanning(accountType(a.type), a.includeInPlanning ?? (!['investment','401k','hsa','other-asset'].includes(accountType(a.type)))), ownerId:a.ownerId||OWNER_HOUSEHOLD }));
   st.bills = arr(src.bills).map(b=>({ id:b.id||uid(), name:b.name||'Bill', amount:b.amount||0, dueDate:b.dueDate||b.date||todayISO(), kind:b.kind || (b.category==='variable'?'non-fixed':'fixed'), recurrence: normalizeRecurrence(b.recurrence || b.recurring || 'one-time'), priority: normalizePriority(b.priority || (b.category==='fixed'?'important':'flexible')), paymentType:normalizePaymentType(b.paymentType || b.payType || b.billPayType || 'unknown'), ownerId:b.ownerId||OWNER_HOUSEHOLD }));
   st.buckets = arr(src.buckets).map(b=>({ id:b.id||uid(), name:b.name||'Bucket', targetAmount:b.targetAmount ?? b.amount ?? 0, frequency:bucketFrequency(b.frequency), ownerId:b.ownerId||OWNER_HOUSEHOLD, createdAt:b.createdAt||new Date().toISOString() }));
   st.goals = arr(src.goals).map(g=>({ id:g.id||uid(), name:g.name||'Savings Goal', targetAmount:g.targetAmount ?? g.target ?? g.amount ?? 0, currentAmount:g.currentAmount ?? g.current ?? 0, plannedContribution:g.plannedContribution ?? g.contribution ?? 0, contributionFrequency:goalContributionFrequency(g.contributionFrequency || g.frequency || 'monthly'), dueDate:g.dueDate||g.targetDate||'', linkedEventId:g.linkedEventId||'', ownerId:g.ownerId||OWNER_HOUSEHOLD, createdAt:g.createdAt||new Date().toISOString() }));
@@ -1336,7 +1361,7 @@ function cleanState(input){
   const validOwner=(id)=>st.members.some(m=>m.id===id)?id:OWNER_HOUSEHOLD;
   const num=(v,label)=>{ const p=parseMoney(String(v??0)); if(!p.ok){ warnings.push(`${label} had an invalid amount and was set to 0.`); return 0;} return p.value; };
   const date=(v,label,required=true)=>{ if(!v&&!required)return ''; if(!isRealDate(v)){ warnings.push(`${label} had an invalid date and was set to today.`); return todayISO(); } return v; };
-  st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), type:accountType(a.type), balance:num(a.balance,'Account balance'), includeInPlanning:a.includeInPlanning!==false, ownerId:validOwner(a.ownerId) }));
+  st.accounts = st.accounts.map(a=>({ id:a.id||uid(), name:truncate(a.name||'Account',LIMITS.name), type:accountType(a.type), balance:num(a.balance,'Account balance'), includeInPlanning:normalizeIncludeInPlanning(accountType(a.type), a.includeInPlanning!==false), ownerId:validOwner(a.ownerId) }));
   st.bills = st.bills.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bill',LIMITS.name), amount:num(b.amount,'Bill amount'), dueDate:date(b.dueDate,'Bill due date'), kind:b.kind==='non-fixed'?'non-fixed':'fixed', recurrence:normalizeRecurrence(b.recurrence), category:BILL_CATEGORIES.includes(b.category)?b.category:'other', priority:normalizePriority(b.priority), paymentType:normalizePaymentType(b.paymentType), ownerId:validOwner(b.ownerId) }));
   st.buckets = st.buckets.map(b=>({ id:b.id||uid(), name:truncate(b.name||'Bucket',LIMITS.name), targetAmount:num(b.targetAmount,'Bucket amount'), frequency:bucketFrequency(b.frequency), ownerId:validOwner(b.ownerId), createdAt:b.createdAt||new Date().toISOString() }));
   st.goals = st.goals.map(g=>({ id:g.id||uid(), name:truncate(g.name||'Savings Goal',LIMITS.name), targetAmount:num(g.targetAmount,'Goal target'), currentAmount:num(g.currentAmount,'Goal current'), plannedContribution:num(g.plannedContribution,'Goal contribution'), contributionFrequency:goalContributionFrequency(g.contributionFrequency), dueDate:g.dueDate?date(g.dueDate,'Goal due date',false):'', linkedEventId:g.linkedEventId||'', ownerId:validOwner(g.ownerId), createdAt:g.createdAt||new Date().toISOString() }));
@@ -1383,6 +1408,19 @@ function openDrawer(){ document.getElementById('sideDrawer').classList.add('open
 function closeDrawer(){ document.getElementById('sideDrawer').classList.remove('open'); document.getElementById('drawerBackdrop').classList.remove('open'); }
 
 function toggleGoalActionFields(){ const sel=document.getElementById('goalActionSelect'); const link=document.getElementById('linkGoalWrap'); const create=document.getElementById('createGoalWrap'); if(!sel||!link||!create) return; const isLink = sel.value==='link'; link.style.display=isLink?'block':'none'; create.style.display=isLink?'none':'block'; }
+
+function syncAccountPlanningField(type){
+  const wrap = document.getElementById('includePlanningWrap');
+  const select = document.querySelector('select[name="includeInPlanning"]');
+  const note = document.getElementById('debtPlanningNote');
+  const eligible = canIncludeAccountTypeInPlanning(type);
+  if(!wrap || !select) return;
+  wrap.classList.toggle('planning-disabled', !eligible);
+  select.disabled = !eligible;
+  if(!eligible) select.value = 'false';
+  if(note) note.style.display = eligible ? 'none' : 'block';
+}
+window.syncAccountPlanningField = syncAccountPlanningField;
 window.openRecord = openRecord; window.deleteRecord = deleteRecord; window.undoDelete = undoDelete; window.markPaycheckReceived = markPaycheckReceived; window.previewReceivedBalance = previewReceivedBalance; window.finishPaycheckReceivedFlow = finishPaycheckReceivedFlow;
 window.navigate = navigate; window.moveMonth = moveMonth; window.showMonthlyOutlook = showMonthlyOutlook; window.openCalendarRecord = openCalendarRecord; window.showFundedDetails = showFundedDetails;
 window.toggleAllocation = toggleAllocation; window.updateAssignRemaining = updateAssignRemaining; window.saveFundingSession = saveFundingSession; window.gotoFunding = gotoFunding; window.openMarkBillPaid = openMarkBillPaid; window.previewPaidBalance = previewPaidBalance; window.finishMarkBillPaid = finishMarkBillPaid; window.undoBillPayment = undoBillPayment; window.reverseFundingSession = reverseFundingSession; window.openMarkGoalSaved = openMarkGoalSaved; window.previewGoalSavedBalance = previewGoalSavedBalance; window.finishMarkGoalSaved = finishMarkGoalSaved; window.undoGoalSave = undoGoalSave;
